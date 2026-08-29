@@ -26,6 +26,10 @@ final class SimulationSettings {
     
     var boundsX: Float = 5.0 // m
     var boundsY: Float = 3.0 // m
+    
+    var particles: Int = 600
+    var particleSpacing: Float = 0.06
+    var randomScattering: Bool = true
 }
 
 struct MetalView: NSViewRepresentable {
@@ -67,6 +71,32 @@ func createParticlesInGrid(n: Int, spacing: Float = 0.1) -> [Particle] {
     
     return positions.map { pos in
         Particle(position: pos, velocity: SIMD2<Float>(0.0, 0.0))
+    }
+}
+
+func scatterParticlesRandomly(n: Int, settings: SimulationSettings) -> [Particle] {
+    let boundsHalf = ((settings.boundsX / 2) - settings.particleRadius, (settings.boundsY / 2) - settings.particleRadius)
+    
+    var positions: [SIMD2<Float>] = []
+    positions.reserveCapacity(n)
+    
+    for _ in 0 ..< n {
+        let randX = Float.random(in: -boundsHalf.0...boundsHalf.0)
+        let randY = Float.random(in: -boundsHalf.1...boundsHalf.1)
+        
+        positions.append(SIMD2<Float>(randX, randY))
+    }
+    
+    return positions.map { pos in
+        Particle(position: pos, velocity: SIMD2<Float>(0.0, 0.0))
+    }
+}
+
+func createParticles(n: Int, wantsRandom: Bool, settings: SimulationSettings, spacing: Float = 0.1) -> [Particle] {
+    if wantsRandom {
+        return scatterParticlesRandomly(n: n, settings: settings)
+    } else {
+        return createParticlesInGrid(n: n, spacing: spacing)
     }
 }
 
@@ -125,6 +155,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     
     private var lastFrameTime: CFTimeInterval?
     
+    private var lastRandomScattering: Bool = false
+    
     init(settings: SimulationSettings) {
         self.settings = settings
         
@@ -150,8 +182,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         renderPipeline = try! createRenderPipeline(vertex: "particleVertex", fragment: "particleFragment", device: device)
         boundsPipeline = try! createRenderPipeline(vertex: "boundsVertex", fragment: "boundsFragment", device: device)
-        self.particles = MTLSyncBuffer(device: device, values: createParticlesInGrid(n: 1))
+        self.particles = MTLSyncBuffer(device: device, values: createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing))
         self.bounds = MTLSyncBuffer(device: device, values: createBounds(settings: settings))
+        
+        lastRandomScattering = settings.randomScattering
         
         super.init()
     }
@@ -173,6 +207,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         if settings.paused {
             bounds.assign(new: createBounds(settings: settings))
+            if !settings.randomScattering {
+                particles.assign(new: createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing))
+            } else {
+                if lastRandomScattering != settings.randomScattering {
+                    particles.assign(new: createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing))
+                }
+                lastRandomScattering = settings.randomScattering
+            }
         }
     }
     

@@ -141,8 +141,6 @@ struct ParametersView: View {
                 .font(.largeTitle)
                 .bold()
 
-        
-            
             FloatField("Gravity", value: $settings.gravity, unit: "m/s2")
             Divider()
             FloatField("Bounds X", value: $settings.boundsX, unit: "m")
@@ -155,6 +153,9 @@ struct ParametersView: View {
             HStack {
                 Text("Particle Spacing: ")
                 Slider(value: $settings.particleSpacing, in: 0.001 ... 0.3)
+            }
+            Toggle(isOn: $settings.randomScattering) {
+                Text("Scatter randomly")
             }
             
             Spacer()
