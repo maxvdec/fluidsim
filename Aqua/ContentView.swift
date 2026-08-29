@@ -153,6 +153,7 @@ struct ParametersView: View {
                 Text(settings.targetDensity.formatted(.number.precision(.fractionLength(2))))
             }
             FloatField("Pressure Multiplier", value: $settings.pressureMultiplier, unit: "")
+            FloatField("Viscosity Strength", value: $settings.viscosityStrength, unit: "")
             Divider()
             FloatField("Bounds X", value: $settings.boundsX, unit: "m")
             FloatField("Bounds Y", value: $settings.boundsY, unit: "m")

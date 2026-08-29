@@ -35,7 +35,8 @@ final class SimulationSettings {
     var smoothingRadius: Float = 0.2 // m
     
     var targetDensity: Float = 100.0
-    var pressureMultiplier: Float = 0.1
+    var pressureMultiplier: Float = 50.0
+    var viscosityStrength: Float = 0.5
 }
 
 struct MetalView: NSViewRepresentable {
@@ -76,7 +77,7 @@ func createParticlesInGrid(n: Int, spacing: Float = 0.1) -> [Particle] {
     }
     
     return positions.map { pos in
-        Particle(position: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0)
+        Particle(position: pos, predictedPosition: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0)
     }
 }
 
@@ -94,7 +95,7 @@ func scatterParticlesRandomly(n: Int, settings: SimulationSettings) -> [Particle
     }
     
     return positions.map { pos in
-        Particle(position: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0)
+        Particle(position: pos, predictedPosition: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0)
     }
 }
 
@@ -153,6 +154,23 @@ func createBounds(settings: SimulationSettings) -> [SIMD2<Float>] {
     return verticesSIMD
 }
 
+func spatialEntryCount(for particleCount: Int) -> Int {
+    var count = 1
+    while count < particleCount {
+        count <<= 1
+    }
+    return count
+}
+
+func createLookupEntries(particleCount: Int) -> [SpatialLookupEntry] {
+    let lookup = SpatialLookupEntry(particleIndex: UInt32.max, cellKey: UInt32.max)
+    return Array(repeating: lookup, count: spatialEntryCount(for: particleCount))
+}
+
+func createCellStartIndices(particleCount: Int) -> [UInt32] {
+    Array(repeating: UInt32.max, count: particleCount)
+}
+
 @MainActor
 final class Renderer: NSObject, MTKViewDelegate {
     let settings: SimulationSettings
@@ -164,6 +182,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let densityCalculationPipeline: MTLComputePipelineState
     private let simulationPipeline: MTLComputePipelineState
     private let densityRenderPipeline: MTLComputePipelineState
+    private let predictionPipeline: MTLComputePipelineState
+    private let spatialLookupPipeline: MTLComputePipelineState
+    private let spatialSortPipeline: MTLComputePipelineState
+    private let spatialClearPipeline: MTLComputePipelineState
+    private let spatialStartPipeline: MTLComputePipelineState
     
     private let renderPipeline: MTLRenderPipelineState
     private let boundsPipeline: MTLRenderPipelineState
@@ -174,8 +197,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     var particles: MTLSyncBuffer<Particle>
     private var nextParticles: MTLSyncBuffer<Particle>
     var bounds: MTLSyncBuffer<SIMD2<Float>>
+    var lookupEntries: MTLSyncBuffer<SpatialLookupEntry>
+    private var cellStartIndices: MTLSyncBuffer<UInt32>
     
     private var uniforms: Uniforms = .init()
+    private let simulationSubsteps = 2
     
     private var lastFrameTime: CFTimeInterval?
     
@@ -209,6 +235,21 @@ final class Renderer: NSObject, MTKViewDelegate {
         let densityRenderFunction = library.makeFunction(name: "renderDensity")!
         self.densityRenderPipeline = try! device.makeComputePipelineState(function: densityRenderFunction)
         
+        let predictionFunction = library.makeFunction(name: "predictPositions")!
+        self.predictionPipeline = try! device.makeComputePipelineState(function: predictionFunction)
+
+        let lookupEntriesCompute = library.makeFunction(name: "updateSpatialLookup")!
+        self.spatialLookupPipeline = try! device.makeComputePipelineState(function: lookupEntriesCompute)
+
+        let spatialSortFunction = library.makeFunction(name: "sortSpatialLookup")!
+        self.spatialSortPipeline = try! device.makeComputePipelineState(function: spatialSortFunction)
+
+        let spatialClearFunction = library.makeFunction(name: "clearCellStartIndices")!
+        self.spatialClearPipeline = try! device.makeComputePipelineState(function: spatialClearFunction)
+
+        let spatialStartFunction = library.makeFunction(name: "buildCellStartIndices")!
+        self.spatialStartPipeline = try! device.makeComputePipelineState(function: spatialStartFunction)
+
         self.renderPipeline = try! createRenderPipeline(vertex: "particleVertex", fragment: "particleFragment", device: device)
         self.boundsPipeline = try! createRenderPipeline(vertex: "boundsVertex", fragment: "boundsFragment", device: device)
         self.densityDisplayPipeline = try! createRenderPipeline(
@@ -220,6 +261,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.particles = MTLSyncBuffer(device: device, values: initialParticles)
         self.nextParticles = MTLSyncBuffer(device: device, values: initialParticles)
         self.bounds = MTLSyncBuffer(device: device, values: createBounds(settings: settings))
+        self.lookupEntries = MTLSyncBuffer(device: device, values: createLookupEntries(particleCount: initialParticles.count))
+        self.cellStartIndices = MTLSyncBuffer(device: device, values: createCellStartIndices(particleCount: initialParticles.count))
         
         self.lastRandomScattering = settings.randomScattering
         
@@ -229,7 +272,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
     
     private func updateUniforms(view: MTKView, dt: Float) {
-        uniforms.dt = min(dt, 1.0 / 60.0) * settings.timeScale
+        uniforms.dt = settings.paused
+            ? 0.0
+            : min(dt, 1.0 / 30.0) * settings.timeScale / Float(simulationSubsteps)
         
         uniforms.gravity = settings.gravity
         uniforms.particleSize = settings.particleRadius
@@ -247,6 +292,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         uniforms.targetDensity = settings.targetDensity
         uniforms.pressureMultiplier = settings.pressureMultiplier
+        uniforms.viscosityStrength = settings.viscosityStrength
         
         if settings.paused {
             bounds.assign(new: createBounds(settings: settings))
@@ -259,12 +305,16 @@ final class Renderer: NSObject, MTKViewDelegate {
                 let newParticles = createParticles(n: requestedParticleCount, wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing)
                 particles.assign(new: newParticles)
                 nextParticles.assign(new: newParticles)
+
+                lookupEntries.assign(new: createLookupEntries(particleCount: requestedParticleCount))
+                cellStartIndices.assign(new: createCellStartIndices(particleCount: requestedParticleCount))
             }
 
             lastRandomScattering = settings.randomScattering
         }
 
         uniforms.particleCount = UInt32(particles.count)
+        uniforms.spatialEntryCount = UInt32(lookupEntries.count)
     }
 
     private func updateDensityTextureSize() {
@@ -282,6 +332,105 @@ final class Renderer: NSObject, MTKViewDelegate {
             height: height
         )
     }
+    private func encodePrediction(_ commandBuffer: MTLCommandBuffer) {
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            return
+        }
+
+        encoder.setComputePipelineState(predictionPipeline)
+        particles.setAtEncoder(encoder, index: 0)
+        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+
+        let width = predictionPipeline.threadExecutionWidth
+        encoder.dispatchThreads(
+            MTLSize(width: particles.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+    }
+
+    private func encodeLookupUpdate(_ commandBuffer: MTLCommandBuffer) {
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            return
+        }
+
+        encoder.setComputePipelineState(spatialLookupPipeline)
+
+        particles.setAtEncoder(encoder, index: 0)
+        lookupEntries.setAtEncoder(encoder, index: 1)
+
+        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
+
+        let width = spatialLookupPipeline.threadExecutionWidth
+        encoder.dispatchThreads(
+            MTLSize(width: lookupEntries.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+    }
+
+    private func encodeLookupSort(_ commandBuffer: MTLCommandBuffer) {
+        var sequenceLength: UInt32 = 2
+
+        while sequenceLength <= UInt32(lookupEntries.count) {
+            var comparisonDistance = sequenceLength >> 1
+
+            while comparisonDistance > 0 {
+                guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                    return
+                }
+
+                encoder.setComputePipelineState(spatialSortPipeline)
+                lookupEntries.setAtEncoder(encoder, index: 0)
+                encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+                encoder.setBytes(&comparisonDistance, length: MemoryLayout<UInt32>.stride, index: 2)
+                encoder.setBytes(&sequenceLength, length: MemoryLayout<UInt32>.stride, index: 3)
+
+                let width = spatialSortPipeline.threadExecutionWidth
+                encoder.dispatchThreads(
+                    MTLSize(width: lookupEntries.count, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+                )
+                encoder.endEncoding()
+                comparisonDistance >>= 1
+            }
+
+            sequenceLength <<= 1
+        }
+    }
+
+    private func encodeCellStartIndices(_ commandBuffer: MTLCommandBuffer) {
+        guard let clearEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            return
+        }
+
+        clearEncoder.setComputePipelineState(spatialClearPipeline)
+        cellStartIndices.setAtEncoder(clearEncoder, index: 0)
+        clearEncoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+
+        let clearWidth = spatialClearPipeline.threadExecutionWidth
+        clearEncoder.dispatchThreads(
+            MTLSize(width: particles.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: clearWidth, height: 1, depth: 1)
+        )
+        clearEncoder.endEncoding()
+
+        guard let buildEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            return
+        }
+
+        buildEncoder.setComputePipelineState(spatialStartPipeline)
+        lookupEntries.setAtEncoder(buildEncoder, index: 0)
+        cellStartIndices.setAtEncoder(buildEncoder, index: 1)
+        buildEncoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
+
+        let buildWidth = spatialStartPipeline.threadExecutionWidth
+        buildEncoder.dispatchThreads(
+            MTLSize(width: particles.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: buildWidth, height: 1, depth: 1)
+        )
+        buildEncoder.endEncoding()
+    }
     
     private func encodeDensityCalculation(_ commandBuffer: MTLCommandBuffer) {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -292,8 +441,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         particles.setAtEncoder(encoder, index: 0)
         nextParticles.setAtEncoder(encoder, index: 1)
+        lookupEntries.setAtEncoder(encoder, index: 2)
+        cellStartIndices.setAtEncoder(encoder, index: 3)
         
-        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
+        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 4)
         
         let particleCount = particles.count
         
@@ -322,8 +473,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         nextParticles.setAtEncoder(encoder, index: 0)
         particles.setAtEncoder(encoder, index: 1)
+        lookupEntries.setAtEncoder(encoder, index: 2)
+        cellStartIndices.setAtEncoder(encoder, index: 3)
         
-        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
+        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 4)
         
         let particleCount = particles.count
         
@@ -355,11 +508,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.setComputePipelineState(densityRenderPipeline)
         
         particles.setAtEncoder(encoder, index: 0)
+        lookupEntries.setAtEncoder(encoder, index: 1)
+        cellStartIndices.setAtEncoder(encoder, index: 2)
 
         encoder.setBytes(
             &uniforms,
             length: MemoryLayout<Uniforms>.stride,
-            index: 1
+            index: 3
         )
 
         encoder.setTexture(
@@ -470,9 +625,20 @@ final class Renderer: NSObject, MTKViewDelegate {
             return
         }
         
-        if !settings.paused {
-            encodeDensityCalculation(commandBuffer)
-            encodeSimulation(commandBuffer)
+        if settings.paused {
+            encodePrediction(commandBuffer)
+            encodeLookupUpdate(commandBuffer)
+            encodeLookupSort(commandBuffer)
+            encodeCellStartIndices(commandBuffer)
+        } else {
+            for _ in 0 ..< simulationSubsteps {
+                encodePrediction(commandBuffer)
+                encodeLookupUpdate(commandBuffer)
+                encodeLookupSort(commandBuffer)
+                encodeCellStartIndices(commandBuffer)
+                encodeDensityCalculation(commandBuffer)
+                encodeSimulation(commandBuffer)
+            }
         }
         
         encodeDensityPass(commandBuffer)

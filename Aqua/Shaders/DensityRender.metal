@@ -10,22 +10,45 @@
 #include "../MetalUtils.h"
 using namespace metal;
 
-float calculateDensityForPass(device const Particle *particles, float2 samplePos, constant Uniforms& uniforms) {
+float calculateDensityForPass(
+    device const Particle *particles,
+    device const SpatialLookupEntry *lookupEntries,
+    device const uint *cellStartIndices,
+    float2 samplePos,
+    constant Uniforms& uniforms
+) {
     const float mass = 1.0;
     float density = 0.0;
-    
-    for (uint i = 0; i < uniforms.particleCount; i++) {
-        Particle p = particles[i];
-        
-        float dst = length(p.position - samplePos);
-        float influence = smoothingKernel(uniforms.smoothingRadius, dst);
-        density += mass * influence;
+
+    int2 sampleCell = getCell2D(samplePos, uniforms.smoothingRadius);
+
+    for (uint offsetIndex = 0; offsetIndex < 9; offsetIndex++) {
+        int2 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
+        uint key = keyFromHash(hashCell2D(cell), uniforms.particleCount);
+        uint entryIndex = cellStartIndices[key];
+
+        if (entryIndex == 0xffffffffu) {
+            continue;
+        }
+
+        while (entryIndex < uniforms.particleCount && lookupEntries[entryIndex].cellKey == key) {
+            uint particleIndex = lookupEntries[entryIndex].particleIndex;
+            Particle p = particles[particleIndex];
+
+            if (all(getCell2D(p.predictedPosition, uniforms.smoothingRadius) == cell)) {
+                float dst = length(p.predictedPosition - samplePos);
+                density += mass * smoothingKernel(uniforms.smoothingRadius, dst);
+            }
+
+            entryIndex++;
+        }
     }
-    
+
     return density;
 }
 
-kernel void renderDensity(device const Particle* particles [[buffer(0)]], constant Uniforms& uniforms [[buffer(1)]],
+kernel void renderDensity(device const Particle* particles [[buffer(0)]], device const SpatialLookupEntry *lookupEntries [[buffer(1)]],
+                          device const uint *cellStartIndices [[buffer(2)]], constant Uniforms& uniforms [[buffer(3)]],
                           texture2d<float, access::write> output [[texture(0)]], uint2 gid [[thread_position_in_grid]]) {
     uint width = output.get_width();
     uint height = output.get_height();
@@ -40,6 +63,8 @@ kernel void renderDensity(device const Particle* particles [[buffer(0)]], consta
 
     float density = calculateDensityForPass(
         particles,
+        lookupEntries,
+        cellStartIndices,
         samplePos,
         uniforms
     );

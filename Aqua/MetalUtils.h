@@ -60,9 +60,35 @@ inline float densityToPressure(float density, float targetDensity, float pressur
 }
 
 inline float calculateSharedPressure(float densityA, float densityB, float targetDensity, float pressureMultiplier) {
-    float pressureA = densityToPressure(densityA, targetDensity, pressureMultiplier);
-    float pressureB = densityToPressure(densityB, targetDensity, pressureMultiplier);
+    float pressureA = max(0.0, densityToPressure(densityA, targetDensity, pressureMultiplier));
+    float pressureB = max(0.0, densityToPressure(densityB, targetDensity, pressureMultiplier));
     return (pressureA + pressureB) / 2;
+}
+
+#define HASHK1 15823
+#define HASHK2 9737333
+
+inline int2 getSpatialNeighborOffset(uint index) {
+    constexpr int2 offsets[9] = {
+        int2(-1, 1), int2(0, 1), int2(1, 1),
+        int2(-1, 0), int2(0, 0), int2(1, 0),
+        int2(-1, -1), int2(0, -1), int2(1, -1)
+    };
+    return offsets[index];
+}
+
+inline int2 getCell2D(float2 pos, float radius) {
+    return (int2)floor(pos / radius);
+}
+
+inline uint hashCell2D(int2 cell) {
+    uint a = uint(cell.x) * HASHK1;
+    uint b = uint(cell.y) * HASHK2;
+    return a + b;
+}
+
+inline uint keyFromHash(uint hash, uint tableSize) {
+    return hash % tableSize;
 }
 
 #endif /* MetalUtils_h */

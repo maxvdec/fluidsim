@@ -12,6 +12,7 @@
 
 struct Particle {
     simd_float2 position;
+    simd_float2 predictedPosition;
     simd_float2 velocity;
     float density;
 };
@@ -33,6 +34,14 @@ struct Uniforms {
     
     float targetDensity;
     float pressureMultiplier;
+    float viscosityStrength;
+
+    unsigned int spatialEntryCount;
+};
+
+struct SpatialLookupEntry {
+    unsigned int particleIndex;
+    unsigned int cellKey;
 };
 
 
