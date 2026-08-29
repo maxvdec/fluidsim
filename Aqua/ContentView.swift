@@ -171,7 +171,7 @@ struct ParametersView: View {
             IntField("Particles", value: $settings.particles, unit: "part.")
             HStack {
                 Text("Particle Radius: ")
-                Slider(value: $settings.particleRadius, in: 0.1 ... 3.0)
+                Slider(value: $settings.particleRadius, in: 0.001 ... 1.0)
             }
             HStack {
                 Text("Particle Spacing: ")

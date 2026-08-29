@@ -35,7 +35,7 @@ final class SimulationSettings {
     var smoothingRadius: Float = 0.2 // m
     
     var targetDensity: Float = 100.0
-    var pressureMultiplier: Float = 10
+    var pressureMultiplier: Float = 0.1
 }
 
 struct MetalView: NSViewRepresentable {
