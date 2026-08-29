@@ -41,22 +41,28 @@ inline float2 getBoundContactPosition(float2 pos, float2 rect, float radius) {
 }
 
 inline float smoothingKernel(float radius, float dst) {
-    float volume = PI * pow(radius, 8) / 4;
-    float value = max(0.0, radius * radius - dst * dst);
-    return value * value * value / volume;
+    if (dst >= radius) return 0;
+    float volume = (PI * pow(radius, 4)) / 6;
+    return (radius - dst) * (radius - dst) / volume;
 }
 
 inline float smoothingKernelDerivative(float radius, float dst) {
     if (dst >= radius) return 0;
-    float f = radius * radius - dst * dst;
-    float scale = -24 / (PI * pow(radius, 8));
-    return scale * dst * f * f;
+    
+    float scale = 12 / (pow(radius, 4) * PI);
+    return (dst - radius) * scale;
 }
 
 inline float densityToPressure(float density, float targetDensity, float pressureMultiplier) {
     float densityError = density - targetDensity;
     float pressure = densityError * pressureMultiplier;
     return pressure;
+}
+
+inline float calculateSharedPressure(float densityA, float densityB, float targetDensity, float pressureMultiplier) {
+    float pressureA = densityToPressure(densityA, targetDensity, pressureMultiplier);
+    float pressureB = densityToPressure(densityB, targetDensity, pressureMultiplier);
+    return (pressureA + pressureB) / 2;
 }
 
 #endif /* MetalUtils_h */
