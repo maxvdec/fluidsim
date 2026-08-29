@@ -21,9 +21,16 @@ vertex VertexOut particleVertex(uint vertexID [[vertex_id]], device const Partic
     
     VertexOut out;
     
-    out.position = float4(particle.position, 0.0, 1.0);
+    float2 pixelPosition = particle.position * uniforms.ppm;
     
-    out.pointSize = uniforms.particleSize;
+    float2 ndc = float2(
+        pixelPosition.x / (uniforms.viewportSize.x * 0.5),
+        pixelPosition.y / (uniforms.viewportSize.y * 0.5));
+    
+    out.position = float4(ndc, 0.0, 1.0);
+    
+    out.pointSize = uniforms.particleSize * 2.0 * uniforms.ppm;
+    
     out.speed = length(particle.velocity);
     
     return out;

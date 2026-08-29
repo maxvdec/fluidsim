@@ -17,10 +17,15 @@ import QuartzCore
 final class SimulationSettings {
     var paused = true
     
-    var gravity: Float = 4.00
-    var particleSize: Float = 30.0
+    var gravity: Float = 4.00 // m/s^2
+    var particleRadius: Float = 0.3 // m
+    
+    var ppm: Float = 20
     
     var timeScale: Float = 1.0
+    
+    var boundsX: Float = 2.0 // m
+    var boundsY: Float = 1.0 // m
 }
 
 struct MetalView: NSViewRepresentable {
@@ -123,12 +128,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.dt = dt * settings.timeScale
         
         uniforms.gravity = settings.gravity
-        uniforms.particleSize = settings.particleSize
+        uniforms.particleSize = settings.particleRadius
         
         uniforms.viewportSize = SIMD2<Float>(
             Float(view.drawableSize.width),
             Float(view.drawableSize.height)
         )
+        
+        uniforms.ppm = settings.ppm
     }
     
     private func encodeSimulation(_ commandBuffer: MTLCommandBuffer) {

@@ -89,11 +89,15 @@ struct ParametersView: View {
                 .bold()
 
             HStack {
-                Text("Particle Size: ")
-                Slider(value: $settings.particleSize, in: 0.1 ... 30.0)
+                Text("Particle Radius: ")
+                Slider(value: $settings.particleRadius, in: 0.1 ... 3.0)
             }
             
             FloatField("Gravity", value: $settings.gravity, unit: "m/s2")
+            FloatField("Pixels per meter", value: $settings.ppm, unit: "px")
+            Divider()
+            FloatField("Bounds X", value: $settings.boundsX, unit: "m")
+            FloatField("Bounds Y", value: $settings.boundsY, unit: "2")
             
             Spacer()
             Button {

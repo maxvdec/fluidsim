@@ -20,6 +20,7 @@ struct Uniforms {
     float time;
     
     simd_float2 viewportSize;
+    float ppm;
     
     float gravity;
     float particleSize;
