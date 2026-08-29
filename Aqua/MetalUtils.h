@@ -10,6 +10,8 @@
 #include "metal_stdlib"
 using namespace metal;
 
+#define PI 3.14159265358979323846
+
 inline float2 siToNDC(float2 position, float ppm, float2 viewportSize) {
     float2 pixelPosition = position * ppm;
     
@@ -57,8 +59,9 @@ inline float2 getBoundContactPosition(float2 pos, float2 rect, float radius) {
 }
 
 inline float smoothingKernel(float radius, float dst) {
+    float volume = PI * pow(radius, 8) / 4;
     float value = max(0.0, radius * radius - dst * dst);
-    return value * value * value;
+    return value * value * value / volume;
 }
 
 #endif /* MetalUtils_h */

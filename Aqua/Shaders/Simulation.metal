@@ -10,11 +10,11 @@
 #include "../MetalUtils.h"
 using namespace metal;
 
-float calculateDensity(device Particle *particles, float2 samplePos, Uniforms uniforms) {
-    const float mass = 1;
-    float density = 0;
+float calculateDensity(device const Particle *particles, float2 samplePos, constant Uniforms& uniforms) {
+    const float mass = 1.0;
+    float density = 0.0;
     
-    for (unsigned int i = 0; i < uniforms.particleCount; i++) {
+    for (uint i = 0; i < uniforms.particleCount; i++) {
         Particle p = particles[i];
         
         float dst = length(p.position - samplePos);
