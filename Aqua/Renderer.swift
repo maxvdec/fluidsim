@@ -30,6 +30,10 @@ final class SimulationSettings {
     var particles: Int = 600
     var particleSpacing: Float = 0.06
     var randomScattering: Bool = true
+    
+    var smoothingRadius: Float = 0.2 // m
+    
+    var density: Float = 0.0
 }
 
 struct MetalView: NSViewRepresentable {
@@ -70,7 +74,7 @@ func createParticlesInGrid(n: Int, spacing: Float = 0.1) -> [Particle] {
     }
     
     return positions.map { pos in
-        Particle(position: pos, velocity: SIMD2<Float>(0.0, 0.0))
+        Particle(position: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0)
     }
 }
 
@@ -88,7 +92,7 @@ func scatterParticlesRandomly(n: Int, settings: SimulationSettings) -> [Particle
     }
     
     return positions.map { pos in
-        Particle(position: pos, velocity: SIMD2<Float>(0.0, 0.0))
+        Particle(position: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0)
     }
 }
 
@@ -204,6 +208,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.ppm = min(uniforms.viewportSize.x / settings.boundsX, uniforms.viewportSize.y / settings.boundsY) * 0.8
         uniforms.bounds = SIMD2<Float>(settings.boundsX, settings.boundsY)
         uniforms.particleCount = UInt32(particles.count)
+        uniforms.smoothingRadius = settings.smoothingRadius
         
         if settings.paused {
             bounds.assign(new: createBounds(settings: settings))
@@ -257,6 +262,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         particles.setAtVertexBuffer(encoder, index: 0)
         
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
         
         encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: particles.count)
         
@@ -290,6 +296,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             if settings.paused {
                 bounds.syncBufferToList()
             }
+            
+            settings.density = particles.getArray().first?.density ?? -1
         }
         
         let dt = calculateDeltaTime()

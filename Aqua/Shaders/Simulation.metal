@@ -10,6 +10,21 @@
 #include "../MetalUtils.h"
 using namespace metal;
 
+float calculateDensity(device Particle *particles, float2 samplePos, Uniforms uniforms) {
+    const float mass = 1;
+    float density = 0;
+    
+    for (unsigned int i = 0; i < uniforms.particleCount; i++) {
+        Particle p = particles[i];
+        
+        float dst = length(p.position - samplePos);
+        float influence = smoothingKernel(uniforms.smoothingRadius, dst);
+        density += mass * influence;
+    }
+    
+    return density;
+}
+
 kernel void simulateParticles(device Particle *particles [[buffer(0)]], constant Uniforms &uniforms [[buffer(1)]],
                               uint id [[thread_position_in_grid]]) {
     if (id >= uniforms.particleCount) {
@@ -17,8 +32,8 @@ kernel void simulateParticles(device Particle *particles [[buffer(0)]], constant
     }
     Particle p = particles[id];
     
-    p.velocity.y -= uniforms.gravity * uniforms.dt;
-    p.position += p.velocity * uniforms.dt;
+    // Calculate the density from origin
+    p.density = calculateDensity(particles, float2(0, 0), uniforms);
     
     float2 bounds = uniforms.bounds;
     

@@ -13,6 +13,7 @@
 struct Particle {
     simd_float2 position;
     simd_float2 velocity;
+    float density;
 };
 
 struct Uniforms {
@@ -27,6 +28,8 @@ struct Uniforms {
     float particleSize;
     
     unsigned int particleCount;
+    
+    float smoothingRadius;
 };
 
 

@@ -142,10 +142,15 @@ struct ParametersView: View {
                 .bold()
 
             FloatField("Gravity", value: $settings.gravity, unit: "m/s2")
+            HStack {
+                Text("Smoothing Radius: ")
+                Slider(value: $settings.smoothingRadius, in: 0.1 ... 10.0)
+                Text(settings.smoothingRadius.formatted(.number.precision(.fractionLength(2))))
+            }
             Divider()
             FloatField("Bounds X", value: $settings.boundsX, unit: "m")
-            FloatField("Bounds Y", value: $settings.boundsY, unit: "2")
-            IntField("Particles", value: $settings.particles, unit: "")
+            FloatField("Bounds Y", value: $settings.boundsY, unit: "m")
+            IntField("Particles", value: $settings.particles, unit: "part.")
             HStack {
                 Text("Particle Radius: ")
                 Slider(value: $settings.particleRadius, in: 0.1 ... 3.0)
@@ -157,6 +162,8 @@ struct ParametersView: View {
             Toggle(isOn: $settings.randomScattering) {
                 Text("Scatter randomly")
             }
+            
+            Text("Density: \(settings.density, format: .number.precision(.fractionLength(2)))")
             
             Spacer()
             Button {

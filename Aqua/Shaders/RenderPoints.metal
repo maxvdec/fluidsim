@@ -14,6 +14,7 @@ struct VertexOut {
     float4 position [[position]];
     float pointSize [[point_size]];
     float speed;
+    float2 siPosition;
 };
 
 vertex VertexOut particleVertex(uint vertexID [[vertex_id]], device const Particle *particles [[buffer(0)]],
@@ -26,18 +27,25 @@ vertex VertexOut particleVertex(uint vertexID [[vertex_id]], device const Partic
     out.pointSize = uniforms.particleSize * 2.0 * uniforms.ppm;
     
     out.speed = length(particle.velocity);
+    out.siPosition = particle.position;
     
     return out;
 }
 
 fragment float4 particleFragment(
     VertexOut in [[stage_in]],
-    float2 pointCoord [[point_coord]]
+    float2 pointCoord [[point_coord]],
+    constant Uniforms &uniforms [[buffer(1)]]
 ) {
     float2 centered = pointCoord * 2.0 - 1.0;
 
     if (length(centered) > 1.0) {
         discard_fragment();
+    }
+    
+    float centerDist = length(in.siPosition);
+    if (centerDist > uniforms.smoothingRadius) {
+        return float4(1.0, 0.0, 1.0, 1.0);
     }
 
     float maxSpeed = 5.0;
