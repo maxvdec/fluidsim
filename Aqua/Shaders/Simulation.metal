@@ -25,9 +25,9 @@ float calculateDensity(device const Particle *particles, float2 samplePos, const
     return density;
 }
 
-float2 calculateDensityGradient(device const Particle *particles, float2 samplePos, constant Uniforms& uniforms) {
+float2 calculatePressureForce(device const Particle *particles, float2 samplePos, constant Uniforms& uniforms) {
     const float mass = 1.0;
-    float2 densityGradient = float2(0.0, 0.0);
+    float2 pressureForce = float2(0.0, 0.0);
     
     for (uint i = 0; i < uniforms.particleCount; i++) {
         Particle p = particles[i];
@@ -38,10 +38,11 @@ float2 calculateDensityGradient(device const Particle *particles, float2 sampleP
         }
         float2 dir = (p.position - samplePos) / dst;
         float slope = smoothingKernelDerivative(uniforms.smoothingRadius, dst);
-        densityGradient += -dir * slope * mass;
+        float density = p.density;
+        pressureForce += -densityToPressure(density, uniforms.targetDensity, uniforms.pressureMultiplier) * dir * slope * mass / density;
     }
     
-    return densityGradient;
+    return pressureForce;
 }
 
 kernel void simulateParticles(device Particle *particles [[buffer(0)]], constant Uniforms &uniforms [[buffer(1)]],
@@ -51,6 +52,15 @@ kernel void simulateParticles(device Particle *particles [[buffer(0)]], constant
     }
     Particle p = particles[id];
     
+    // Apply pressure force
+    float2 pressureForce = calculatePressureForce(particles, p.position, uniforms);
+    float2 acceleration = pressureForce / p.density;
+    p.velocity += acceleration * uniforms.dt;
+    
+    // Get position
+    p.position += p.velocity * uniforms.dt;
+    
+    // Compute collisions
     float2 bounds = uniforms.bounds;
     
     if (!insideOriginRectangle(p.position, bounds, uniforms.particleSize)) {
