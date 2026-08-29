@@ -20,6 +20,7 @@ struct Uniforms {
     float time;
     
     simd_float2 viewportSize;
+    simd_float2 bounds;
     float ppm;
     
     float gravity;

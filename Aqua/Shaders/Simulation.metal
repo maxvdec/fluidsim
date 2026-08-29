@@ -7,6 +7,7 @@
 
 #include <metal_stdlib>
 #include "../BridgingHeader.h"
+#include "../MetalUtils.h"
 using namespace metal;
 
 kernel void simulateParticles(device Particle *particles [[buffer(0)]], constant Uniforms &uniforms [[buffer(1)]],
@@ -18,6 +19,13 @@ kernel void simulateParticles(device Particle *particles [[buffer(0)]], constant
     
     p.velocity.y -= uniforms.gravity * uniforms.dt;
     p.position += p.velocity * uniforms.dt;
+    
+    float2 bounds = uniforms.bounds;
+    
+    if (!insideOriginRectangle(p.position, bounds, uniforms.particleSize)) {
+        p.velocity *= -0.9;
+        p.position = getBoundContactPosition(p.position, bounds, uniforms.particleSize);
+    }
     
     particles[id] = p;
 }

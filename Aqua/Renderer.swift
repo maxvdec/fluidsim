@@ -168,6 +168,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         )
         
         uniforms.ppm = min(uniforms.viewportSize.x / settings.boundsX, uniforms.viewportSize.y / settings.boundsY) * 0.8
+        uniforms.bounds = SIMD2<Float>(settings.boundsX, settings.boundsY)
         uniforms.particleCount = UInt32(particles.count)
         
         if settings.paused {
