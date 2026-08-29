@@ -9,6 +9,59 @@ import SwiftUI
     }
 }
 
+struct IntField: View {
+    @Binding var value: Int
+
+    let title: String
+    let unit: String
+
+    @State private var text: String = ""
+
+    init(
+        _ title: String,
+        value: Binding<Int>,
+        unit: String
+    ) {
+        self.title = title
+        self._value = value
+        self.unit = unit
+    }
+
+    var body: some View {
+        HStack {
+            Text(title)
+
+            Spacer()
+
+            TextField("", text: $text)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 90)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: text) { _, newValue in
+                    if let number = Int(newValue) {
+                        value = number
+                    }
+                }
+
+            Text(unit)
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 35, alignment: .leading)
+        }
+        .onAppear {
+            text = format(value)
+        }
+        .onChange(of: value) { _, newValue in
+            if Int(text) != newValue {
+                text = format(newValue)
+            }
+        }
+    }
+
+    private func format(_ value: Int) -> String {
+        String(value)
+    }
+}
+
 struct FloatField: View {
     @Binding var value: Float
 
@@ -88,15 +141,21 @@ struct ParametersView: View {
                 .font(.largeTitle)
                 .bold()
 
-            HStack {
-                Text("Particle Radius: ")
-                Slider(value: $settings.particleRadius, in: 0.1 ... 3.0)
-            }
+        
             
             FloatField("Gravity", value: $settings.gravity, unit: "m/s2")
             Divider()
             FloatField("Bounds X", value: $settings.boundsX, unit: "m")
             FloatField("Bounds Y", value: $settings.boundsY, unit: "2")
+            IntField("Particles", value: $settings.particles, unit: "")
+            HStack {
+                Text("Particle Radius: ")
+                Slider(value: $settings.particleRadius, in: 0.1 ... 3.0)
+            }
+            HStack {
+                Text("Particle Spacing: ")
+                Slider(value: $settings.particleSpacing, in: 0.001 ... 0.3)
+            }
             
             Spacer()
             Button {
