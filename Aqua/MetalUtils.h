@@ -71,4 +71,10 @@ inline float smoothingKernelDerivative(float radius, float dst) {
     return scale * dst * f * f;
 }
 
+inline float densityToPressure(float density, float targetDensity, float pressureMultiplier) {
+    float densityError = density - targetDensity;
+    float pressure = densityError * pressureMultiplier;
+    return pressure;
+}
+
 #endif /* MetalUtils_h */

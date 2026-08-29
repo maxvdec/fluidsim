@@ -147,6 +147,12 @@ struct ParametersView: View {
                 Slider(value: $settings.smoothingRadius, in: 0.1 ... 10.0)
                 Text(settings.smoothingRadius.formatted(.number.precision(.fractionLength(2))))
             }
+            HStack {
+                Text("Target Density")
+                Slider(value: $settings.targetDensity, in: 1 ... 500)
+                Text(settings.targetDensity.formatted(.number.precision(.fractionLength(2))))
+            }
+            FloatField("Pressure Multiplier", value: $settings.pressureMultiplier, unit: "")
             Divider()
             FloatField("Bounds X", value: $settings.boundsX, unit: "m")
             FloatField("Bounds Y", value: $settings.boundsY, unit: "m")
@@ -175,7 +181,7 @@ struct ParametersView: View {
                 Text("Scatter randomly")
             }
             
-            Text("Density: \(settings.density, format: .number.precision(.fractionLength(2)))")
+            
             
             Spacer()
             Button {

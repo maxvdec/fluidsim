@@ -33,6 +33,9 @@ final class SimulationSettings {
     var randomScattering: Bool = true
     
     var smoothingRadius: Float = 0.2 // m
+    
+    var targetDensity: Float = 100.0
+    var pressureMultiplier: Float = 10
 }
 
 struct MetalView: NSViewRepresentable {
@@ -239,6 +242,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.particleCount = UInt32(particles.count)
         uniforms.smoothingRadius = settings.smoothingRadius
         
+        uniforms.targetDensity = settings.targetDensity
+        uniforms.pressureMultiplier = settings.pressureMultiplier
+        
         if settings.paused {
             bounds.assign(new: createBounds(settings: settings))
             if !settings.randomScattering {
@@ -441,9 +447,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         if !settings.paused {
             encodeDensityCalculation(commandBuffer)
             encodeSimulation(commandBuffer)
-            encodeDensityPass(commandBuffer)
         }
         
+        encodeDensityPass(commandBuffer)
         encodeRendering(commandBuffer, descriptor: descriptor)
         
         commandBuffer.present(drawable)

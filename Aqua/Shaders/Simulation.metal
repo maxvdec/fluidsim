@@ -38,6 +38,8 @@ float2 calculateDensityGradient(device const Particle *particles, float2 sampleP
         float density = p.density;
         densityGradient += -p.density * dir * slope * mass / density;
     }
+    
+    return densityGradient;
 }
 
 kernel void simulateParticles(device Particle *particles [[buffer(0)]], constant Uniforms &uniforms [[buffer(1)]],

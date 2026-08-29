@@ -30,6 +30,9 @@ struct Uniforms {
     unsigned int particleCount;
     
     float smoothingRadius;
+    
+    float targetDensity;
+    float pressureMultiplier;
 };
 
 
