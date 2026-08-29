@@ -26,6 +26,7 @@ final class SimulationSettings {
     
     var boundsX: Float = 5.0 // m
     var boundsY: Float = 3.0 // m
+    var boundaryViewportPadding: Float = 10.0
     
     var particles: Int = 600
     var particleSpacing: Float = 0.06
@@ -149,8 +150,13 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     
     private let simulationPipeline: MTLComputePipelineState
+    private let densityRenderPipeline: MTLComputePipelineState
+    
     private let renderPipeline: MTLRenderPipelineState
     private let boundsPipeline: MTLRenderPipelineState
+    private let densityDisplayPipeline: MTLRenderPipelineState
+    
+    private let densityTexture: MTLTexture
     
     var particles: MTLSyncBuffer<Particle>
     var bounds: MTLSyncBuffer<SIMD2<Float>>
@@ -181,15 +187,35 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         
         let simulationFunction = library.makeFunction(name: "simulateParticles")!
-        
         self.simulationPipeline = try! device.makeComputePipelineState(function: simulationFunction)
+        
+        let densityRenderFunction = library.makeFunction(name: "renderDensity")!
+        self.densityRenderPipeline = try! device.makeComputePipelineState(function: densityRenderFunction)
         
         renderPipeline = try! createRenderPipeline(vertex: "particleVertex", fragment: "particleFragment", device: device)
         boundsPipeline = try! createRenderPipeline(vertex: "boundsVertex", fragment: "boundsFragment", device: device)
+        densityDisplayPipeline = try! createRenderPipeline(
+            vertex: "densityVertex",
+            fragment: "densityFragment",
+            device: device
+        )
         self.particles = MTLSyncBuffer(device: device, values: createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing))
         self.bounds = MTLSyncBuffer(device: device, values: createBounds(settings: settings))
         
         lastRandomScattering = settings.randomScattering
+        
+        let densityScale: Float = 0.75
+        
+        let texDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float,
+            width: max(1, Int(settings.boundsX * settings.ppm * densityScale)),
+            height: max(1, Int(settings.boundsY * settings.ppm * densityScale)),
+            mipmapped: false
+        )
+
+        texDescriptor.usage = [.shaderRead, .shaderWrite]
+
+        self.densityTexture = device.makeTexture(descriptor: texDescriptor)!
         
         super.init()
     }
@@ -205,7 +231,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             Float(view.drawableSize.height)
         )
         
-        uniforms.ppm = min(uniforms.viewportSize.x / settings.boundsX, uniforms.viewportSize.y / settings.boundsY) * 0.8
+        let boundaryViewportScale = max(0.01, 1.0 - settings.boundaryViewportPadding / 50.0)
+        uniforms.ppm = min(uniforms.viewportSize.x / settings.boundsX, uniforms.viewportSize.y / settings.boundsY) * boundaryViewportScale
         uniforms.bounds = SIMD2<Float>(settings.boundsX, settings.boundsY)
         uniforms.particleCount = UInt32(particles.count)
         uniforms.smoothingRadius = settings.smoothingRadius
@@ -252,10 +279,81 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.endEncoding()
     }
     
-    private func encodeParticlePointRendering(_ commandBuffer: MTLCommandBuffer, descriptor: MTLRenderPassDescriptor) {
+    func encodeDensityPass(
+        _ commandBuffer: MTLCommandBuffer
+    ) {
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            return
+        }
+
+        encoder.label = "Density Compute Pass"
+
+        encoder.setComputePipelineState(densityRenderPipeline)
+        
+        particles.setAtEncoder(encoder, index: 0)
+
+        encoder.setBytes(
+            &uniforms,
+            length: MemoryLayout<Uniforms>.stride,
+            index: 1
+        )
+
+        encoder.setTexture(
+            densityTexture,
+            index: 0
+        )
+
+        let width = densityRenderPipeline.threadExecutionWidth
+
+        let height =
+            densityRenderPipeline.maxTotalThreadsPerThreadgroup
+            / width
+
+        let threadsPerGroup = MTLSize(
+            width: width,
+            height: height,
+            depth: 1
+        )
+
+        let threads = MTLSize(
+            width: densityTexture.width,
+            height: densityTexture.height,
+            depth: 1
+        )
+
+        encoder.dispatchThreads(
+            threads,
+            threadsPerThreadgroup: threadsPerGroup
+        )
+
+        encoder.endEncoding()
+    }
+    
+    private func encodeRendering(_ commandBuffer: MTLCommandBuffer, descriptor: MTLRenderPassDescriptor) {
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
             return
         }
+        
+        encoder.setRenderPipelineState(
+            densityDisplayPipeline
+        )
+
+        encoder.setVertexBytes(
+            &uniforms,
+            length: MemoryLayout<Uniforms>.stride,
+            index: 1
+        )
+
+        encoder.setFragmentTexture(
+            densityTexture,
+            index: 0
+        )
+
+        encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 6
+        )
         
         encoder.setRenderPipelineState(renderPipeline)
         
@@ -312,9 +410,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         if !settings.paused {
             encodeSimulation(commandBuffer)
+            encodeDensityPass(commandBuffer)
         }
         
-        encodeParticlePointRendering(commandBuffer, descriptor: descriptor)
+        encodeRendering(commandBuffer, descriptor: descriptor)
         
         commandBuffer.present(drawable)
         commandBuffer.commit()

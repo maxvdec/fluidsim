@@ -150,6 +150,18 @@ struct ParametersView: View {
             Divider()
             FloatField("Bounds X", value: $settings.boundsX, unit: "m")
             FloatField("Bounds Y", value: $settings.boundsY, unit: "m")
+            VStack(alignment: .leading) {
+                Text("Boundary Viewport Padding")
+                HStack {
+                    Slider(value: $settings.boundaryViewportPadding, in: -50 ... 45)
+                    Text(settings.boundaryViewportPadding.formatted(.number.precision(.fractionLength(0))))
+                    Text("%")
+                        .foregroundStyle(.secondary)
+                }
+                Text(boundaryViewportPaddingDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             IntField("Particles", value: $settings.particles, unit: "part.")
             HStack {
                 Text("Particle Radius: ")
@@ -176,6 +188,18 @@ struct ParametersView: View {
                 }
             }
         }
+    }
+
+    private var boundaryViewportPaddingDescription: String {
+        if settings.boundaryViewportPadding < 0 {
+            return "Boundary larger than screen"
+        }
+
+        if settings.boundaryViewportPadding > 0 {
+            return "Boundary smaller than screen"
+        }
+
+        return "Boundary fits screen"
     }
 }
 
