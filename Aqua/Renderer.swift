@@ -5,13 +5,13 @@
 //  Created by Max Van den Eynde on 28/08/2026.
 //
 
+import Combine
 import Foundation
 import Metal
 import MetalKit
-import SwiftUI
 import Observation
-import Combine
 import QuartzCore
+import SwiftUI
 
 @Observable
 final class SimulationSettings {
@@ -33,8 +33,6 @@ final class SimulationSettings {
     var randomScattering: Bool = true
     
     var smoothingRadius: Float = 0.2 // m
-    
-    var density: Float = 0.0
 }
 
 struct MetalView: NSViewRepresentable {
@@ -149,6 +147,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     
     private let commandQueue: MTLCommandQueue
     
+    private let densityCalculationPipeline: MTLComputePipelineState
     private let simulationPipeline: MTLComputePipelineState
     private let densityRenderPipeline: MTLComputePipelineState
     
@@ -161,7 +160,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     var particles: MTLSyncBuffer<Particle>
     var bounds: MTLSyncBuffer<SIMD2<Float>>
     
-    private var uniforms: Uniforms = Uniforms()
+    private var uniforms: Uniforms = .init()
     
     private var lastFrameTime: CFTimeInterval?
     
@@ -186,15 +185,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             fatalError("Could not load Metal Library")
         }
         
+        let densityCalculationFunction = library.makeFunction(name: "calculateDensities")!
+        self.densityCalculationPipeline = try! device.makeComputePipelineState(function: densityCalculationFunction)
+        
         let simulationFunction = library.makeFunction(name: "simulateParticles")!
         self.simulationPipeline = try! device.makeComputePipelineState(function: simulationFunction)
         
         let densityRenderFunction = library.makeFunction(name: "renderDensity")!
         self.densityRenderPipeline = try! device.makeComputePipelineState(function: densityRenderFunction)
         
-        renderPipeline = try! createRenderPipeline(vertex: "particleVertex", fragment: "particleFragment", device: device)
-        boundsPipeline = try! createRenderPipeline(vertex: "boundsVertex", fragment: "boundsFragment", device: device)
-        densityDisplayPipeline = try! createRenderPipeline(
+        self.renderPipeline = try! createRenderPipeline(vertex: "particleVertex", fragment: "particleFragment", device: device)
+        self.boundsPipeline = try! createRenderPipeline(vertex: "boundsVertex", fragment: "boundsFragment", device: device)
+        self.densityDisplayPipeline = try! createRenderPipeline(
             vertex: "densityVertex",
             fragment: "densityFragment",
             device: device
@@ -202,7 +204,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.particles = MTLSyncBuffer(device: device, values: createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing))
         self.bounds = MTLSyncBuffer(device: device, values: createBounds(settings: settings))
         
-        lastRandomScattering = settings.randomScattering
+        self.lastRandomScattering = settings.randomScattering
         
         let densityScale: Float = 0.75
         
@@ -250,6 +252,35 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
     
+    private func encodeDensityCalculation(_ commandBuffer: MTLCommandBuffer) {
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            return
+        }
+        
+        encoder.setComputePipelineState(densityCalculationPipeline)
+        
+        particles.setAtEncoder(encoder, index: 0)
+        
+        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+        
+        let particleCount = particles.count
+        
+        let threadsPerGroup = MTLSize(width: densityCalculationPipeline.threadExecutionWidth, height: 1, depth: 1)
+        
+        let groups = MTLSize(
+            width: (
+                particleCount +
+                    threadsPerGroup.width - 1
+            ) / threadsPerGroup.width,
+            height: 1,
+            depth: 1
+        )
+        
+        encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerGroup)
+        
+        encoder.endEncoding()
+    }
+    
     private func encodeSimulation(_ commandBuffer: MTLCommandBuffer) {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             return
@@ -268,7 +299,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let groups = MTLSize(
             width: (
                 particleCount +
-                threadsPerGroup.width - 1
+                    threadsPerGroup.width - 1
             ) / threadsPerGroup.width,
             height: 1,
             depth: 1
@@ -307,7 +338,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         let height =
             densityRenderPipeline.maxTotalThreadsPerThreadgroup
-            / width
+                / width
 
         let threadsPerGroup = MTLSize(
             width: width,
@@ -394,8 +425,6 @@ final class Renderer: NSObject, MTKViewDelegate {
             if settings.paused {
                 bounds.syncBufferToList()
             }
-            
-            settings.density = particles.getArray().first?.density ?? -1
         }
         
         let dt = calculateDeltaTime()
@@ -404,11 +433,13 @@ final class Renderer: NSObject, MTKViewDelegate {
             
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let descriptor = view.currentRenderPassDescriptor,
-              let drawable = view.currentDrawable else {
+              let drawable = view.currentDrawable
+        else {
             return
         }
         
         if !settings.paused {
+            encodeDensityCalculation(commandBuffer)
             encodeSimulation(commandBuffer)
             encodeDensityPass(commandBuffer)
         }

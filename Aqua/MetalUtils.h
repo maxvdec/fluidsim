@@ -64,4 +64,11 @@ inline float smoothingKernel(float radius, float dst) {
     return value * value * value / volume;
 }
 
+inline float smoothingKernelDerivative(float radius, float dst) {
+    if (dst >= radius) return 0;
+    float f = radius * radius - dst * dst;
+    float scale = -24 / (PI * pow(radius, 8));
+    return scale * dst * f * f;
+}
+
 #endif /* MetalUtils_h */
