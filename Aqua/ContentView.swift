@@ -94,7 +94,6 @@ struct ParametersView: View {
             }
             
             FloatField("Gravity", value: $settings.gravity, unit: "m/s2")
-            FloatField("Pixels per meter", value: $settings.ppm, unit: "px")
             Divider()
             FloatField("Bounds X", value: $settings.boundsX, unit: "m")
             FloatField("Bounds Y", value: $settings.boundsY, unit: "2")

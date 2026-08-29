@@ -24,6 +24,8 @@ struct Uniforms {
     
     float gravity;
     float particleSize;
+    
+    unsigned int particleCount;
 };
 
 

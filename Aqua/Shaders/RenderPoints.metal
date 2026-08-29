@@ -7,6 +7,7 @@
 
 #include <metal_stdlib>
 #include "../BridgingHeader.h"
+#include "../MetalUtils.h"
 using namespace metal;
 
 struct VertexOut {
@@ -20,15 +21,8 @@ vertex VertexOut particleVertex(uint vertexID [[vertex_id]], device const Partic
     Particle particle = particles[vertexID];
     
     VertexOut out;
-    
-    float2 pixelPosition = particle.position * uniforms.ppm;
-    
-    float2 ndc = float2(
-        pixelPosition.x / (uniforms.viewportSize.x * 0.5),
-        pixelPosition.y / (uniforms.viewportSize.y * 0.5));
-    
-    out.position = float4(ndc, 0.0, 1.0);
-    
+        
+    out.position = float4(siToNDC(particle.position, uniforms.ppm, uniforms.viewportSize), 0.0, 1.0);
     out.pointSize = uniforms.particleSize * 2.0 * uniforms.ppm;
     
     out.speed = length(particle.velocity);

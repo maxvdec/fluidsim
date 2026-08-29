@@ -17,15 +17,15 @@ import QuartzCore
 final class SimulationSettings {
     var paused = true
     
-    var gravity: Float = 4.00 // m/s^2
-    var particleRadius: Float = 0.3 // m
+    var gravity: Float = 9.81 // m/s^2
+    var particleRadius: Float = 0.025 // m
     
     var ppm: Float = 20
     
     var timeScale: Float = 1.0
     
-    var boundsX: Float = 2.0 // m
-    var boundsY: Float = 1.0 // m
+    var boundsX: Float = 5.0 // m
+    var boundsY: Float = 3.0 // m
 }
 
 struct MetalView: NSViewRepresentable {
@@ -70,6 +70,42 @@ func createParticlesInGrid(n: Int, spacing: Float = 0.1) -> [Particle] {
     }
 }
 
+func createRenderPipeline(vertex: String, fragment: String, device: MTLDevice) throws -> MTLRenderPipelineState {
+    guard let library = device.makeDefaultLibrary() else {
+        fatalError("Could not load Metal Library")
+    }
+    
+    let vertexFunction = library.makeFunction(name: vertex)!
+    let fragmentFunction = library.makeFunction(name: fragment)!
+    
+    let descriptor = MTLRenderPipelineDescriptor()
+    descriptor.vertexFunction = vertexFunction
+    descriptor.fragmentFunction = fragmentFunction
+    descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+    
+    return try device.makeRenderPipelineState(descriptor: descriptor)
+}
+
+func createBounds(settings: SimulationSettings) -> [SIMD2<Float>] {
+    let w = settings.boundsX
+    let h = settings.boundsY
+    
+    let vertices: [(Float, Float)] = [
+        (-w / 2, -h / 2),
+        (w / 2, -h / 2),
+        (w / 2, -h / 2),
+        (w / 2, h / 2),
+        (w / 2, h / 2),
+        (-w / 2, h / 2),
+        (-w / 2, h / 2),
+        (-w / 2, -h / 2)
+    ]
+    
+    let verticesSIMD = vertices.map { t in SIMD2(t.0, t.1) }
+    
+    return verticesSIMD
+}
+
 @MainActor
 final class Renderer: NSObject, MTKViewDelegate {
     let settings: SimulationSettings
@@ -80,8 +116,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     
     private let simulationPipeline: MTLComputePipelineState
     private let renderPipeline: MTLRenderPipelineState
+    private let boundsPipeline: MTLRenderPipelineState
     
     var particles: MTLSyncBuffer<Particle>
+    var bounds: MTLSyncBuffer<SIMD2<Float>>
     
     private var uniforms: Uniforms = Uniforms()
     
@@ -110,16 +148,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         self.simulationPipeline = try! device.makeComputePipelineState(function: simulationFunction)
         
-        let vertexFunction = library.makeFunction(name: "particleVertex")!
-        let fragmentFunction = library.makeFunction(name: "particleFragment")!
-        
-        let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.vertexFunction = vertexFunction
-        descriptor.fragmentFunction = fragmentFunction
-        descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-        
-        self.renderPipeline = try! device.makeRenderPipelineState(descriptor: descriptor)
+        renderPipeline = try! createRenderPipeline(vertex: "particleVertex", fragment: "particleFragment", device: device)
+        boundsPipeline = try! createRenderPipeline(vertex: "boundsVertex", fragment: "boundsFragment", device: device)
         self.particles = MTLSyncBuffer(device: device, values: createParticlesInGrid(n: 1))
+        self.bounds = MTLSyncBuffer(device: device, values: createBounds(settings: settings))
         
         super.init()
     }
@@ -135,7 +167,12 @@ final class Renderer: NSObject, MTKViewDelegate {
             Float(view.drawableSize.height)
         )
         
-        uniforms.ppm = settings.ppm
+        uniforms.ppm = min(uniforms.viewportSize.x / settings.boundsX, uniforms.viewportSize.y / settings.boundsY) * 0.8
+        uniforms.particleCount = UInt32(particles.count)
+        
+        if settings.paused {
+            bounds.assign(new: createBounds(settings: settings))
+        }
     }
     
     private func encodeSimulation(_ commandBuffer: MTLCommandBuffer) {
@@ -180,6 +217,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: particles.count)
         
+        // Bounds
+        encoder.setRenderPipelineState(boundsPipeline)
+       
+        bounds.setAtVertexBuffer(encoder, index: 0)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+        
+        encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: bounds.count)
+        
         encoder.endEncoding()
     }
     
@@ -199,6 +244,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         defer {
             particles.syncBufferToList()
+            if settings.paused {
+                bounds.syncBufferToList()
+            }
         }
         
         let dt = calculateDeltaTime()
