@@ -49,7 +49,8 @@ vertex DensityVertexOut densityVertex(
 
 fragment float4 densityFragment(
     DensityVertexOut in [[stage_in]],
-    texture2d<float> densityTexture [[texture(0)]]
+    texture2d<float> densityTexture [[texture(0)]],
+    constant Uniforms& uniforms [[buffer(1)]]
 ) {
     constexpr sampler densitySampler(
         mag_filter::linear,
@@ -57,9 +58,21 @@ fragment float4 densityFragment(
         address::clamp_to_edge
     );
 
-    return densityTexture.sample(
+    float density = densityTexture.sample(
         densitySampler,
         in.uv
-    );
-}
+    ).r;
+    float targetDensity = max(uniforms.targetDensity, 0.0001);
+    float pressure = densityToPressure(density, targetDensity, uniforms.pressureMultiplier);
+    float pressureRange = max(abs(targetDensity * uniforms.pressureMultiplier), 0.0001);
+    float t = abs(uniforms.pressureMultiplier) < 0.0001
+        ? 0.0
+        : clamp(pressure / pressureRange, -1.0, 1.0);
 
+    float3 blue = float3(0.0, 0.25, 1.0);
+    float3 white = float3(1.0);
+    float3 red = float3(1.0, 0.1, 0.0);
+    float3 color = t < 0.0 ? mix(white, blue, -t) : mix(white, red, t);
+
+    return float4(color, 1.0);
+}

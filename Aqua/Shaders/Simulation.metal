@@ -33,10 +33,12 @@ float2 calculateDensityGradient(device const Particle *particles, float2 sampleP
         Particle p = particles[i];
         
         float dst = length(p.position - samplePos);
+        if (dst <= 0.0001 || dst >= uniforms.smoothingRadius) {
+            continue;
+        }
         float2 dir = (p.position - samplePos) / dst;
         float slope = smoothingKernelDerivative(uniforms.smoothingRadius, dst);
-        float density = p.density;
-        densityGradient += -p.density * dir * slope * mass / density;
+        densityGradient += -dir * slope * mass;
     }
     
     return densityGradient;
@@ -65,9 +67,7 @@ kernel void calculateDensities(device Particle* particles [[buffer(0)]], constan
     }
     Particle p = particles[id];
     
-    // Calculate the density from origin
-    p.density = calculateDensity(particles, float2(0, 0), uniforms);
+    p.density = calculateDensity(particles, p.position, uniforms);
     
     particles[id] = p;
 }
-

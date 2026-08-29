@@ -37,25 +37,7 @@ inline bool insideOriginRectangle(float2 pos, float2 rect, float radius) {
 
 inline float2 getBoundContactPosition(float2 pos, float2 rect, float radius) {
     float2 limit = rect * 0.5 - radius;
-    float partX = pos.x;
-    float partY = pos.y;
-    if (pos.x > limit.x) {
-        return float2(limit.x, partY);
-    }
-    
-    if (pos.x < -limit.x) {
-        return float2(-limit.x, partX);
-    }
-    
-    if (pos.y > limit.y) {
-        return float2(partX, limit.y);
-    }
-    
-    if (pos.y < -limit.y) {
-        return float2(partX, -limit.y);
-    }
-    
-    return float2(0.0, 0.0);
+    return clamp(pos, -limit, limit);
 }
 
 inline float smoothingKernel(float radius, float dst) {

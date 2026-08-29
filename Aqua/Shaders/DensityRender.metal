@@ -44,28 +44,5 @@ kernel void renderDensity(device const Particle* particles [[buffer(0)]], consta
         uniforms
     );
     
-    float pressure = densityToPressure(density, uniforms.targetDensity, uniforms.pressureMultiplier);
-
-    float maxPressure = 100.0;
-
-    float t = clamp(
-        pressure / maxPressure,
-        -1.0,
-        1.0
-    );
-
-    float3 blue  = float3(0.0, 0.25, 1.0);
-    float3 white = float3(1.0);
-    float3 red   = float3(1.0, 0.1, 0.0);
-
-    float3 color;
-
-    if (t < 0.0) {
-        color = mix(white, blue, -t);
-    } else {
-        color = mix(white, red, t);
-    }
-
-    output.write(float4(color, 1.0), gid);
+    output.write(float4(density, 0.0, 0.0, 1.0), gid);
 }
-
