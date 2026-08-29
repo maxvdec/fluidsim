@@ -65,9 +65,16 @@ fragment float4 densityFragment(
     float targetDensity = max(uniforms.targetDensity, 0.0001);
     float pressure = densityToPressure(density, targetDensity, uniforms.pressureMultiplier);
     float pressureRange = max(abs(targetDensity * uniforms.pressureMultiplier), 0.0001);
-    float t = abs(uniforms.pressureMultiplier) < 0.0001
+    float normalizedPressure = abs(uniforms.pressureMultiplier) < 0.0001
         ? 0.0
         : clamp(pressure / pressureRange, -1.0, 1.0);
+    float whiteTolerance = 0.1;
+    float colorMagnitude = clamp(
+        (abs(normalizedPressure) - whiteTolerance) / (1.0 - whiteTolerance),
+        0.0,
+        1.0
+    );
+    float t = copysign(colorMagnitude, normalizedPressure);
 
     float3 blue = float3(0.0, 0.25, 1.0);
     float3 white = float3(1.0);

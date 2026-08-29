@@ -29,8 +29,8 @@ final class SimulationSettings {
     var boundaryViewportPadding: Float = 10.0
     
     var particles: Int = 600
-    var particleSpacing: Float = 0.06
-    var randomScattering: Bool = true
+    var particleSpacing: Float = 0.1
+    var randomScattering: Bool = false
     
     var smoothingRadius: Float = 0.2 // m
     
@@ -172,6 +172,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var densityTexture: MTLTexture
     
     var particles: MTLSyncBuffer<Particle>
+    private var nextParticles: MTLSyncBuffer<Particle>
     var bounds: MTLSyncBuffer<SIMD2<Float>>
     
     private var uniforms: Uniforms = .init()
@@ -215,7 +216,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             fragment: "densityFragment",
             device: device
         )
-        self.particles = MTLSyncBuffer(device: device, values: createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing))
+        let initialParticles = createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing)
+        self.particles = MTLSyncBuffer(device: device, values: initialParticles)
+        self.nextParticles = MTLSyncBuffer(device: device, values: initialParticles)
         self.bounds = MTLSyncBuffer(device: device, values: createBounds(settings: settings))
         
         self.lastRandomScattering = settings.randomScattering
@@ -226,7 +229,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
     
     private func updateUniforms(view: MTKView, dt: Float) {
-        uniforms.dt = dt * settings.timeScale
+        uniforms.dt = min(dt, 1.0 / 60.0) * settings.timeScale
         
         uniforms.gravity = settings.gravity
         uniforms.particleSize = settings.particleRadius
@@ -247,14 +250,18 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         if settings.paused {
             bounds.assign(new: createBounds(settings: settings))
-            if !settings.randomScattering {
-                particles.assign(new: createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing))
-            } else {
-                if lastRandomScattering != settings.randomScattering || particles.count != max(1, settings.particles) {
-                    particles.assign(new: createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing))
-                }
-                lastRandomScattering = settings.randomScattering
+            let requestedParticleCount = max(1, settings.particles)
+            let shouldRegenerateParticles = !settings.randomScattering
+                || lastRandomScattering != settings.randomScattering
+                || particles.count != requestedParticleCount
+
+            if shouldRegenerateParticles {
+                let newParticles = createParticles(n: requestedParticleCount, wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing)
+                particles.assign(new: newParticles)
+                nextParticles.assign(new: newParticles)
             }
+
+            lastRandomScattering = settings.randomScattering
         }
 
         uniforms.particleCount = UInt32(particles.count)
@@ -284,8 +291,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.setComputePipelineState(densityCalculationPipeline)
         
         particles.setAtEncoder(encoder, index: 0)
+        nextParticles.setAtEncoder(encoder, index: 1)
         
-        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
         
         let particleCount = particles.count
         
@@ -312,9 +320,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         encoder.setComputePipelineState(simulationPipeline)
         
-        particles.setAtEncoder(encoder, index: 0)
+        nextParticles.setAtEncoder(encoder, index: 0)
+        particles.setAtEncoder(encoder, index: 1)
         
-        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
         
         let particleCount = particles.count
         

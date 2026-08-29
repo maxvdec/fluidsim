@@ -25,7 +25,7 @@ float calculateDensity(device const Particle *particles, float2 samplePos, const
     return density;
 }
 
-float2 calculatePressureForce(device const Particle *particles, float2 samplePos, constant Uniforms& uniforms) {
+float2 calculatePressureForce(device const Particle *particles, float2 samplePos, float sampleDensity, constant Uniforms& uniforms) {
     const float mass = 1.0;
     float2 pressureForce = float2(0.0, 0.0);
     
@@ -38,14 +38,15 @@ float2 calculatePressureForce(device const Particle *particles, float2 samplePos
         }
         float2 dir = (p.position - samplePos) / dst;
         float slope = smoothingKernelDerivative(uniforms.smoothingRadius, dst);
-        float density = p.density;
-        pressureForce += -densityToPressure(density, uniforms.targetDensity, uniforms.pressureMultiplier) * dir * slope * mass / density;
+        float neighborDensity = max(p.density, 0.0001);
+        float sharedPressure = calculateSharedPressure(sampleDensity, neighborDensity, uniforms.targetDensity, uniforms.pressureMultiplier);
+        pressureForce += sharedPressure * dir * slope * mass / neighborDensity;
     }
     
     return pressureForce;
 }
 
-kernel void simulateParticles(device Particle *particles [[buffer(0)]], constant Uniforms &uniforms [[buffer(1)]],
+kernel void simulateParticles(device const Particle *particles [[buffer(0)]], device Particle *outputParticles [[buffer(1)]], constant Uniforms &uniforms [[buffer(2)]],
                               uint id [[thread_position_in_grid]]) {
     if (id >= uniforms.particleCount) {
         return;
@@ -53,8 +54,9 @@ kernel void simulateParticles(device Particle *particles [[buffer(0)]], constant
     Particle p = particles[id];
     
     // Apply pressure force
-    float2 pressureForce = calculatePressureForce(particles, p.position, uniforms);
-    float2 acceleration = pressureForce / p.density;
+    float density = max(p.density, 0.0001);
+    float2 pressureForce = calculatePressureForce(particles, p.position, density, uniforms);
+    float2 acceleration = pressureForce / density;
     p.velocity += acceleration * uniforms.dt;
     
     // Get position
@@ -64,14 +66,23 @@ kernel void simulateParticles(device Particle *particles [[buffer(0)]], constant
     float2 bounds = uniforms.bounds;
     
     if (!insideOriginRectangle(p.position, bounds, uniforms.particleSize)) {
-        p.velocity *= -0.9;
+        float2 limit = bounds * 0.5 - uniforms.particleSize;
+
+        if (abs(p.position.x) > limit.x) {
+            p.velocity.x *= -0.5;
+        }
+
+        if (abs(p.position.y) > limit.y) {
+            p.velocity.y *= -0.5;
+        }
+
         p.position = getBoundContactPosition(p.position, bounds, uniforms.particleSize);
     }
     
-    particles[id] = p;
+    outputParticles[id] = p;
 }
 
-kernel void calculateDensities(device Particle* particles [[buffer(0)]], constant Uniforms &uniforms [[buffer(1)]], uint id [[thread_position_in_grid]]) {
+kernel void calculateDensities(device const Particle* particles [[buffer(0)]], device Particle* outputParticles [[buffer(1)]], constant Uniforms &uniforms [[buffer(2)]], uint id [[thread_position_in_grid]]) {
     if (id >= uniforms.particleCount) {
         return;
     }
@@ -79,5 +90,5 @@ kernel void calculateDensities(device Particle* particles [[buffer(0)]], constan
     
     p.density = calculateDensity(particles, p.position, uniforms);
     
-    particles[id] = p;
+    outputParticles[id] = p;
 }
