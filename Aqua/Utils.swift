@@ -95,6 +95,10 @@ class MTLSyncBuffer<T> {
     func setAtEncoder(_ encoder: MTLComputeCommandEncoder, index: Int) {
         encoder.setBuffer(buffer, offset: 0, index: index)
     }
+
+    func addBarrier(to encoder: MTLComputeCommandEncoder) {
+        encoder.memoryBarrier(resources: [buffer])
+    }
     
     func setAtVertexBuffer(_ encoder: MTLRenderCommandEncoder, index: Int) {
         encoder.setVertexBuffer(buffer, offset: 0, index: index)

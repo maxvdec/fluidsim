@@ -73,7 +73,7 @@ fragment FragmentOut particleFragment(
         z
     ));
 
-    float maxSpeed = 5.0;
+    float maxSpeed = 6.0;
 
     float t = clamp(
         in.speed / maxSpeed,
@@ -81,9 +81,10 @@ fragment FragmentOut particleFragment(
         1.0
     );
 
-    float3 blue  = float3(0.0, 0.0, 1.0);
-    float3 green = float3(0.0, 1.0, 0.0);
-    float3 red   = float3(1.0, 0.0, 0.0);
+    float3 blue = float3(0.015, 0.10, 0.85);
+    float3 cyan = float3(0.0, 0.78, 0.88);
+    float3 yellow = float3(1.0, 0.78, 0.02);
+    float3 orange = float3(1.0, 0.18, 0.0);
 
     float3 baseColor;
 
@@ -91,23 +92,29 @@ fragment FragmentOut particleFragment(
         && distance(in.worldPosition, uniforms.mousePosition) < uniforms.mouseRadius;
 
     if (isSelected) {
-        baseColor = float3(0.2, 0.9, 1.0);
-    } else if (t < 0.5) {
+        baseColor = float3(1.0, 0.25, 1.0);
+    } else if (t < 0.4) {
         baseColor = mix(
             blue,
-            green,
-            t * 2.0
+            cyan,
+            t / 0.4
+        );
+    } else if (t < 0.8) {
+        baseColor = mix(
+            cyan,
+            yellow,
+            (t - 0.4) / 0.4
         );
     } else {
         baseColor = mix(
-            green,
-            red,
-            (t - 0.5) * 2.0
+            yellow,
+            orange,
+            (t - 0.8) / 0.2
         );
     }
 
     float3 lightDirection = normalize(
-        float3(-0.4, 0.7, 1.0)
+        float3(-0.35, 0.8, 0.55)
     );
 
     float diffuse = max(
@@ -115,11 +122,11 @@ fragment FragmentOut particleFragment(
         0.0
     );
 
-    float ambient = 0.25;
+    float ambient = 0.22;
 
     float lighting =
         ambient +
-        diffuse * 0.75;
+        diffuse * 0.78;
 
     float3 color =
         baseColor * lighting;
@@ -139,10 +146,16 @@ fragment FragmentOut particleFragment(
                 dot(normal, halfwayDirection),
                 0.0
             ),
-            32.0
+            48.0
         );
 
-    color += specular * 0.35;
+    float rim = pow(
+        1.0 - max(normal.z, 0.0),
+        3.0
+    );
+
+    color += specular * 0.65;
+    color += baseColor * rim * 0.2;
 
     float radius = sqrt(r2);
     float aa = fwidth(radius);
@@ -154,6 +167,10 @@ fragment FragmentOut particleFragment(
             1.0,
             radius
         );
+
+    if (alpha < 0.02) {
+        discard_fragment();
+    }
 
     float3 surfaceViewPosition = in.viewCenter + normal * in.renderRadius;
     float4 surfaceClipPosition = uniforms.projectionMatrix * float4(surfaceViewPosition, 1.0);

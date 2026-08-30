@@ -27,6 +27,5 @@ vertex BoundsOut boundsVertex(
 }
 
 fragment float4 boundsFragment(BoundsOut in [[stage_in]]) {
-    return float4(1.0, 1.0, 1.0, 1.0);
+    return float4(0.65, 0.68, 0.18, 0.8);
 }
-

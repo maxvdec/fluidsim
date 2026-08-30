@@ -18,18 +18,18 @@ final class SimulationSettings {
     var paused = true
     
     var gravity: Float = 9.81 // m/s^2
-    var particleRadius: Float = 0.08 // m
+    var particleRadius: Float = 0.11 // m
     
     var ppm: Float = 20
     
     var timeScale: Float = 1.0
     
-    var boundsX: Float = 5.0 // m
-    var boundsY: Float = 2.0 // m
-    var boundsZ: Float = 2.0 // m
+    var boundsX: Float = 16.0 // m
+    var boundsY: Float = 8.0 // m
+    var boundsZ: Float = 10.0 // m
     var boundaryViewportPadding: Float = 10.0
     
-    var particles: Int = 1000
+    var particles: Int = 20000
     var particleSpacing: Float = 0.275
     var randomScattering: Bool = false
     
@@ -131,17 +131,37 @@ func createParticlesInGrid(
         return []
     }
 
-    let side = max(
-        1,
-        Int(ceil(pow(Double(n), 1.0 / 3.0)))
+    let usableBounds = SIMD3<Float>(
+        max(settings.boundsX - settings.particleRadius * 2.0, spacing),
+        max(settings.boundsY - settings.particleRadius * 2.0, spacing),
+        max(settings.boundsZ - settings.particleRadius * 2.0, spacing)
+    )
+    let maxColumns = max(1, Int(floor(usableBounds.x / spacing)) + 1)
+    let maxRows = max(1, Int(floor(usableBounds.y / spacing)) + 1)
+    let maxLayers = max(1, Int(floor(usableBounds.z / spacing)) + 1)
+    var columns = max(1, Int(floor(usableBounds.x * 0.85 / spacing)) + 1)
+    var layers = max(1, Int(floor(usableBounds.z * 0.85 / spacing)) + 1)
+    var rows = Int(ceil(Double(n) / Double(columns * layers)))
+
+    if rows > maxRows {
+        columns = maxColumns
+        layers = maxLayers
+        rows = Int(ceil(Double(n) / Double(columns * layers)))
+    }
+
+    let fittedSpacing = min(
+        spacing,
+        columns > 1 ? usableBounds.x / Float(columns - 1) : spacing,
+        rows > 1 ? usableBounds.y / Float(rows - 1) : spacing,
+        layers > 1 ? usableBounds.z / Float(layers - 1) : spacing
     )
 
     var positions: [SIMD3<Float>] = []
     positions.reserveCapacity(n)
 
-    for zIndex in 0 ..< side {
-        for yIndex in 0 ..< side {
-            for xIndex in 0 ..< side {
+    for yIndex in 0 ..< rows {
+        for zIndex in 0 ..< layers {
+            for xIndex in 0 ..< columns {
                 guard positions.count < n else {
                     break
                 }
@@ -149,20 +169,19 @@ func createParticlesInGrid(
                 let x =
                     (
                         Float(xIndex)
-                        - Float(side - 1) * 0.5
-                    ) * spacing
+                        - Float(columns - 1) * 0.5
+                    ) * fittedSpacing
 
                 let y =
                     (
-                        Float(yIndex)
-                        - Float(side - 1) * 0.5
-                    ) * spacing
+                        Float(yIndex) * fittedSpacing
+                    ) - settings.boundsY * 0.5 + settings.particleRadius
 
                 let z =
                     (
                         Float(zIndex)
-                        - Float(side - 1) * 0.5
-                    ) * spacing
+                        - Float(layers - 1) * 0.5
+                    ) * fittedSpacing
 
                 positions.append(
                     SIMD3<Float>(x, y, z)
@@ -462,7 +481,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             ) * 1.3
 
         self.camera = Camera(
-            target: .zero,
+            target: SIMD3<Float>(
+                0,
+                -settings.boundsY * 0.2,
+                0
+            ),
             distance: initialCameraDistance
         )
         self.camera.yaw = 0.55
@@ -618,19 +641,20 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private func encodeLookupSort(_ commandBuffer: MTLCommandBuffer) {
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            return
+        }
+
+        encoder.setComputePipelineState(spatialSortPipeline)
+        lookupEntries.setAtEncoder(encoder, index: 0)
+        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+
         var sequenceLength: UInt32 = 2
 
         while sequenceLength <= UInt32(lookupEntries.count) {
             var comparisonDistance = sequenceLength >> 1
 
             while comparisonDistance > 0 {
-                guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
-                    return
-                }
-
-                encoder.setComputePipelineState(spatialSortPipeline)
-                lookupEntries.setAtEncoder(encoder, index: 0)
-                encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
                 encoder.setBytes(&comparisonDistance, length: MemoryLayout<UInt32>.stride, index: 2)
                 encoder.setBytes(&sequenceLength, length: MemoryLayout<UInt32>.stride, index: 3)
 
@@ -639,12 +663,14 @@ final class Renderer: NSObject, MTKViewDelegate {
                     MTLSize(width: lookupEntries.count, height: 1, depth: 1),
                     threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
                 )
-                encoder.endEncoding()
+                lookupEntries.addBarrier(to: encoder)
                 comparisonDistance >>= 1
             }
 
             sequenceLength <<= 1
         }
+
+        encoder.endEncoding()
     }
 
     private func encodeCellStartIndices(_ commandBuffer: MTLCommandBuffer) {

@@ -21,6 +21,9 @@ float2 calculateDensitiesAtPosition(
     float nearDensity = 0.0;
 
     int3 sampleCell = getCell3D(samplePos, uniforms.smoothingRadius);
+    bool needsBoundaryGhosts = any(
+        uniforms.bounds * 0.5 - abs(samplePos) < uniforms.smoothingRadius
+    );
 
     for (uint offsetIndex = 0; offsetIndex < 27; offsetIndex++) {
         int3 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
@@ -40,13 +43,15 @@ float2 calculateDensitiesAtPosition(
                 density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, dst);
                 nearDensity += uniforms.particleMass * nearDensityKernel(uniforms.smoothingRadius, dst);
 
-                for (uint ghostIndex = 0; ghostIndex < 26; ghostIndex++) {
-                    int3 direction = getBoundaryGhostDirection(ghostIndex);
-                    if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, direction)) {
-                        float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, direction);
-                        float ghostDst = length(ghostPosition - samplePos);
-                        density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, ghostDst);
-                        nearDensity += uniforms.particleMass * nearDensityKernel(uniforms.smoothingRadius, ghostDst);
+                if (needsBoundaryGhosts) {
+                    for (uint ghostIndex = 0; ghostIndex < 26; ghostIndex++) {
+                        int3 direction = getBoundaryGhostDirection(ghostIndex);
+                        if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, direction)) {
+                            float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, direction);
+                            float ghostDst = length(ghostPosition - samplePos);
+                            density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, ghostDst);
+                            nearDensity += uniforms.particleMass * nearDensityKernel(uniforms.smoothingRadius, ghostDst);
+                        }
                     }
                 }
             }
@@ -70,6 +75,9 @@ float3 calculatePressureForce(
     float3 pressureForce = float3(0.0, 0.0, 0.0);
 
     int3 sampleCell = getCell3D(samplePos, uniforms.smoothingRadius);
+    bool needsBoundaryGhosts = any(
+        uniforms.bounds * 0.5 - abs(samplePos) < uniforms.smoothingRadius
+    );
 
     for (uint offsetIndex = 0; offsetIndex < 27; offsetIndex++) {
         int3 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
@@ -101,24 +109,26 @@ float3 calculatePressureForce(
                     ) * dir * uniforms.particleMass / neighborDensity;
                 }
 
-                for (uint ghostIndex = 0; ghostIndex < 26; ghostIndex++) {
-                    int3 direction = getBoundaryGhostDirection(ghostIndex);
-                    if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, direction)) {
-                        float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, direction);
-                        float3 ghostOffset = ghostPosition - samplePos;
-                        float ghostDst = length(ghostOffset);
+                if (needsBoundaryGhosts) {
+                    for (uint ghostIndex = 0; ghostIndex < 26; ghostIndex++) {
+                        int3 direction = getBoundaryGhostDirection(ghostIndex);
+                        if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, direction)) {
+                            float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, direction);
+                            float3 ghostOffset = ghostPosition - samplePos;
+                            float ghostDst = length(ghostOffset);
 
-                        if (ghostDst > 0.0001 && ghostDst < uniforms.smoothingRadius) {
-                            float3 ghostDir = ghostOffset / ghostDst;
-                            float ghostSlope = smoothingKernelDerivative(uniforms.smoothingRadius, ghostDst);
-                            float ghostNearSlope = nearDensityKernelDerivative(uniforms.smoothingRadius, ghostDst);
-                            float ghostDensity = max(p.density, 0.0001);
-                            float ghostSharedPressure = calculateSharedPressure(sampleDensity, ghostDensity, uniforms.targetDensity, uniforms.pressureMultiplier);
-                            float ghostSharedNearPressure = calculateSharedNearPressure(sampleNearDensity, p.nearDensity, uniforms.nearPressureMultiplier);
-                            pressureForce += (
-                                ghostSharedPressure * ghostSlope
-                                + ghostSharedNearPressure * ghostNearSlope
-                            ) * ghostDir * uniforms.particleMass / ghostDensity;
+                            if (ghostDst > 0.0001 && ghostDst < uniforms.smoothingRadius) {
+                                float3 ghostDir = ghostOffset / ghostDst;
+                                float ghostSlope = smoothingKernelDerivative(uniforms.smoothingRadius, ghostDst);
+                                float ghostNearSlope = nearDensityKernelDerivative(uniforms.smoothingRadius, ghostDst);
+                                float ghostDensity = max(p.density, 0.0001);
+                                float ghostSharedPressure = calculateSharedPressure(sampleDensity, ghostDensity, uniforms.targetDensity, uniforms.pressureMultiplier);
+                                float ghostSharedNearPressure = calculateSharedNearPressure(sampleNearDensity, p.nearDensity, uniforms.nearPressureMultiplier);
+                                pressureForce += (
+                                    ghostSharedPressure * ghostSlope
+                                    + ghostSharedNearPressure * ghostNearSlope
+                                ) * ghostDir * uniforms.particleMass / ghostDensity;
+                            }
                         }
                     }
                 }
