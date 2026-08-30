@@ -18,7 +18,7 @@ final class SimulationSettings {
     var paused = true
 
     var gravity: Float = 9.81 // m/s^2
-    var particleRadius: Float = 0.11 // m
+    var particleRadius: Float = 0.05 // m
 
     var ppm: Float = 20
 
@@ -29,30 +29,30 @@ final class SimulationSettings {
     var boundsZ: Float = 10.0 // m
     var boundaryViewportPadding: Float = 10.0
 
-    var particles: Int = 7000
-    var particleSpacing: Float = 0.275
+    var particles: Int = 32768
+    var particleSpacing: Float = 0.14
     var randomScattering: Bool = false
 
-    var smoothingRadius: Float = 0.75 // m
+    var smoothingRadius: Float = 0.23 // m
 
-    var targetDensity: Float = 100.0
-    var pressureMultiplier: Float = 500.0
-    var viscosityStrength: Float = 0.5
-    var nearPressureMultiplier: Float = 0.1
-    var particleMass: Float = 2.0
+    var targetDensity: Float = 630.0
+    var pressureMultiplier: Float = 288.0
+    var viscosityStrength: Float = 0.001
+    var nearPressureMultiplier: Float = 2.25
+    var particleMass: Float = 1.5
 
     var mouseStrength: Float = 200.0
     var mouseRadius: Float = 4.0
 
-    var densityResolution: Int = 80
+    var densityResolution: Int = 112
 
-    var stepSize: Float = 0.045
-    var densityMultiplier: Float = 1.35
-    var isoLevel: Float = 0.1
+    var stepSize: Float = 0.025
+    var densityMultiplier: Float = 0.00005
+    var isoLevel: Float = 200.0
     
-    var scatterR: Float = 1.8
-    var scatterG: Float = 0.55
-    var scatterB: Float = 0.12
+    var scatterR: Float = 12.0
+    var scatterG: Float = 4.0
+    var scatterB: Float = 4.0
     
     var brightnessMultiplier: Float = 1.15
     var waterIOR: Float = 1.333
@@ -62,7 +62,7 @@ final class SimulationSettings {
 
     var colliderEnabled = true
     var colliderCollisions = true
-    var colliderFloating = true
+    var colliderFloating = false
     var colliderX: Float = 1.8
     var colliderY: Float = -1.0
     var colliderZ: Float = 0.0
@@ -71,9 +71,9 @@ final class SimulationSettings {
     var colliderSizeZ: Float = 2.2
 
     var foamEnabled = true
-    var foamThreshold: Float = 0.42
-    var foamIntensity: Float = 1.35
-    var foamScale: Float = 1.1
+    var foamThreshold: Float = 4.0
+    var foamIntensity: Float = 18.0
+    var foamScale: Float = 0.085
 }
 
 struct MetalView: NSViewRepresentable {
@@ -345,6 +345,22 @@ func createFinalRenderTexture(
     )!
 }
 
+func createFinalDepthTexture(
+    device: MTLDevice,
+    width: Int,
+    height: Int
+) -> MTLTexture {
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .r32Float,
+        width: max(1, width),
+        height: max(1, height),
+        mipmapped: false
+    )
+    descriptor.usage = [.shaderRead, .shaderWrite]
+    descriptor.storageMode = .private
+    return device.makeTexture(descriptor: descriptor)!
+}
+
 func createBounds(settings: SimulationSettings) -> [SIMD3<Float>] {
     let hx = settings.boundsX * 0.5
     let hy = settings.boundsY * 0.5
@@ -395,6 +411,18 @@ func createCellStartIndices(particleCount: Int) -> [UInt32] {
     Array(repeating: UInt32.max, count: particleCount)
 }
 
+func createFoamParticles(count: Int) -> [FoamParticle] {
+    Array(
+        repeating: FoamParticle(
+            position: .zero,
+            velocity: .zero,
+            lifetime: 0.0,
+            scale: 1.0
+        ),
+        count: count
+    )
+}
+
 @MainActor
 final class Renderer: NSObject, MTKViewDelegate {
     let settings: SimulationSettings
@@ -412,21 +440,26 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let spatialClearPipeline: MTLComputePipelineState
     private let spatialStartPipeline: MTLComputePipelineState
     private let finalRenderPipeline: MTLComputePipelineState
+    private let foamUpdatePipeline: MTLComputePipelineState
 
     private let renderPipeline: MTLRenderPipelineState
     private let boundsPipeline: MTLRenderPipelineState
     private let finalTextureDisplayPipeline: MTLRenderPipelineState
+    private let foamRenderPipeline: MTLRenderPipelineState
 
     private let depthStencilState: MTLDepthStencilState
 
     private var densityTexture: MTLTexture
     private var renderResult: MTLTexture
+    private var renderDepthResult: MTLTexture
 
     var particles: MTLSyncBuffer<Particle>
     private var nextParticles: MTLSyncBuffer<Particle>
     var bounds: MTLSyncBuffer<SIMD3<Float>>
     var lookupEntries: MTLSyncBuffer<SpatialLookupEntry>
     private var cellStartIndices: MTLSyncBuffer<UInt32>
+    private var foamParticles: MTLSyncBuffer<FoamParticle>
+    private var foamCounter: MTLSyncBuffer<UInt32>
 
     private var uniforms: Uniforms = .init()
     private let simulationSubsteps = 1
@@ -440,6 +473,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastDensityConfiguration: [Float] = []
     private var densityVolumeDirty = true
     private var frameIndex: UInt64 = 0
+    private var floatingColliderY: Float = 0.0
+    private var floatingColliderVelocity: Float = 0.0
+    private var wasColliderFloating = false
 
     private var mouseInteractionState: MouseInteractionState = .init()
 
@@ -493,6 +529,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         let finalRenderFunction = library.makeFunction(name: "renderVolume")!
         self.finalRenderPipeline = try! device.makeComputePipelineState(function: finalRenderFunction)
 
+        let foamUpdateFunction = library.makeFunction(name: "updateFoamParticles")!
+        self.foamUpdatePipeline = try! device.makeComputePipelineState(function: foamUpdateFunction)
+
         self.renderPipeline = try! createRenderPipeline(vertex: "particleVertex", fragment: "particleFragment", device: device)
         self.boundsPipeline = try! createRenderPipeline(vertex: "boundsVertex", fragment: "boundsFragment", device: device)
         self.finalTextureDisplayPipeline = try! createRenderPipeline(
@@ -500,11 +539,16 @@ final class Renderer: NSObject, MTKViewDelegate {
             fragment: "fullscreenFragment",
             device: device
         )
+        self.foamRenderPipeline = try! createRenderPipeline(
+            vertex: "foamVertex",
+            fragment: "foamFragment",
+            device: device
+        )
 
         let depthDescriptor =
             MTLDepthStencilDescriptor()
 
-        depthDescriptor.depthCompareFunction = .less
+        depthDescriptor.depthCompareFunction = .lessEqual
         depthDescriptor.isDepthWriteEnabled = true
 
         guard let depthState =
@@ -525,6 +569,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.bounds = MTLSyncBuffer(device: device, values: createBounds(settings: settings))
         self.lookupEntries = MTLSyncBuffer(device: device, values: createLookupEntries(particleCount: initialParticles.count))
         self.cellStartIndices = MTLSyncBuffer(device: device, values: createCellStartIndices(particleCount: initialParticles.count))
+        self.foamParticles = MTLSyncBuffer(device: device, values: createFoamParticles(count: 4096))
+        self.foamCounter = MTLSyncBuffer(device: device, values: [0])
 
         self.lastRandomScattering = settings.randomScattering
         self.lastParticleSpacing = settings.particleSpacing
@@ -546,6 +592,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             depth: initialDensityResolution.z
         )
         self.renderResult = createFinalRenderTexture(device: device, width: 1, height: 1)
+        self.renderDepthResult = createFinalDepthTexture(device: device, width: 1, height: 1)
 
         let initialCameraDistance =
             max(
@@ -590,6 +637,11 @@ final class Renderer: NSObject, MTKViewDelegate {
                 width: width,
                 height: height
             )
+        renderDepthResult = createFinalDepthTexture(
+            device: device,
+            width: width,
+            height: height
+        )
     }
 
     private func updateUniforms(view: MTKView, dt: Float) {
@@ -628,18 +680,47 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.foamThreshold = max(settings.foamThreshold, 0.0)
         uniforms.foamIntensity = max(settings.foamIntensity, 0.0)
         uniforms.foamScale = max(settings.foamScale, 0.01)
+        uniforms.foamParticleCapacity = UInt32(foamParticles.count)
 
         uniforms.colliderEnabled = settings.colliderEnabled ? 1 : 0
         uniforms.colliderCollisions = settings.colliderCollisions ? 1 : 0
         uniforms.colliderFloating = settings.colliderFloating ? 1 : 0
-        let floatingOffset = settings.colliderFloating
-            ? sin(uniforms.time * 1.35) * 0.16
-            : 0.0
+        if settings.colliderFloating {
+            if !wasColliderFloating {
+                floatingColliderY = settings.colliderY
+                floatingColliderVelocity = 0.0
+            }
+            let fluidVolume = Float(particles.count)
+                * settings.particleSpacing
+                * settings.particleSpacing
+                * settings.particleSpacing
+            let fluidSurface = -settings.boundsY * 0.5
+                + fluidVolume / max(settings.boundsX * settings.boundsZ, 0.001)
+            let halfHeight = max(settings.colliderSizeY, 0.05) * 0.5
+            let submerged = min(
+                1.0,
+                max(0.0, (fluidSurface - (floatingColliderY - halfHeight)) / (halfHeight * 2.0))
+            )
+            let acceleration = settings.gravity * (submerged * 2.0 - 1.0)
+            let motionDeltaTime = settings.paused ? 0.0 : dt
+            floatingColliderVelocity += acceleration * motionDeltaTime
+            floatingColliderVelocity *= exp(-2.2 * motionDeltaTime)
+            floatingColliderY += floatingColliderVelocity * motionDeltaTime
+            floatingColliderY = max(
+                floatingColliderY,
+                -settings.boundsY * 0.5 + halfHeight
+            )
+        } else {
+            floatingColliderY = settings.colliderY
+            floatingColliderVelocity = 0.0
+        }
+        wasColliderFloating = settings.colliderFloating
         uniforms.colliderPosition = SIMD3<Float>(
             settings.colliderX,
-            settings.colliderY + floatingOffset,
+            floatingColliderY,
             settings.colliderZ
         )
+        uniforms.colliderVelocity = SIMD3<Float>(0.0, floatingColliderVelocity, 0.0)
         uniforms.colliderSize = SIMD3<Float>(
             max(settings.colliderSizeX, 0.05),
             max(settings.colliderSizeY, 0.05),
@@ -775,6 +856,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.setTexture(
             renderResult,
             index: 1
+        )
+
+        encoder.setTexture(
+            renderDepthResult,
+            index: 2
         )
 
         encoder.setBytes(
@@ -953,6 +1039,24 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.endEncoding()
     }
 
+    private func encodeFoamUpdate(_ commandBuffer: MTLCommandBuffer) {
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            return
+        }
+        encoder.setComputePipelineState(foamUpdatePipeline)
+        foamParticles.setAtEncoder(encoder, index: 0)
+        particles.setAtEncoder(encoder, index: 1)
+        lookupEntries.setAtEncoder(encoder, index: 2)
+        cellStartIndices.setAtEncoder(encoder, index: 3)
+        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 4)
+        let width = foamUpdatePipeline.threadExecutionWidth
+        encoder.dispatchThreads(
+            MTLSize(width: foamParticles.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+    }
+
     private func encodeSimulation(_ commandBuffer: MTLCommandBuffer) {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             return
@@ -964,6 +1068,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         particles.setAtEncoder(encoder, index: 1)
         lookupEntries.setAtEncoder(encoder, index: 2)
         cellStartIndices.setAtEncoder(encoder, index: 3)
+        foamParticles.setAtEncoder(encoder, index: 5)
+        foamCounter.setAtEncoder(encoder, index: 6)
 
         encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 4)
 
@@ -1060,14 +1166,19 @@ final class Renderer: NSObject, MTKViewDelegate {
             index: 0
         )
 
+        encoder.setFragmentTexture(
+            renderDepthResult,
+            index: 1
+        )
+
+        encoder.setDepthStencilState(depthStencilState)
+
         encoder.drawPrimitives(
             type: .triangle,
             vertexStart: 0,
             vertexCount: 6
         )
         
-        encoder.setDepthStencilState(depthStencilState)
-
 //        encoder.setRenderPipelineState(renderPipeline)
 //
 //        particles.setAtVertexBuffer(encoder, index: 0)
@@ -1076,6 +1187,14 @@ final class Renderer: NSObject, MTKViewDelegate {
 //        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
 //
 //        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: particles.count)
+
+        if settings.foamEnabled {
+            encoder.setRenderPipelineState(foamRenderPipeline)
+            foamParticles.setAtVertexBuffer(encoder, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: foamParticles.count)
+        }
 
         if settings.showBounds {
             encoder.setRenderPipelineState(boundsPipeline)
@@ -1140,6 +1259,9 @@ final class Renderer: NSObject, MTKViewDelegate {
                 encodeDensityCalculation(commandBuffer)
 
                 encodeSimulation(commandBuffer)
+            }
+            if settings.foamEnabled {
+                encodeFoamUpdate(commandBuffer)
             }
             if frameIndex.isMultiple(of: 2) || densityVolumeDirty {
                 encodeDensityPass(commandBuffer)
@@ -1382,6 +1504,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         cellStartIndices.assign(
             new: createCellStartIndices(particleCount: particleCount)
         )
+
+        foamParticles.assign(new: createFoamParticles(count: foamParticles.count))
+        foamCounter.assign(new: [0])
+        floatingColliderY = settings.colliderY
+        floatingColliderVelocity = 0.0
 
         lastRandomScattering = settings.randomScattering
         lastParticleSpacing = settings.particleSpacing

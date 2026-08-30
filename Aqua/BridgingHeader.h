@@ -18,6 +18,13 @@ struct Particle {
     float nearDensity;
 };
 
+struct FoamParticle {
+    simd_float3 position;
+    simd_float3 velocity;
+    float lifetime;
+    float scale;
+};
+
 struct Uniforms {
     float dt;
     float time;
@@ -62,11 +69,13 @@ struct Uniforms {
     float foamThreshold;
     float foamIntensity;
     float foamScale;
+    unsigned int foamParticleCapacity;
 
     unsigned int colliderEnabled;
     unsigned int colliderCollisions;
     unsigned int colliderFloating;
     simd_float3 colliderPosition;
+    simd_float3 colliderVelocity;
     simd_float3 colliderSize;
     
     simd_float4x4 viewMatrix;

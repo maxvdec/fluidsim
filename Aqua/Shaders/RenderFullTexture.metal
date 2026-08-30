@@ -53,18 +53,35 @@ vertex FullscreenVertexOut fullscreenVertex(
        return out;
 }
 
-fragment float4 fullscreenFragment(
+struct FullscreenFragmentOut {
+    float4 color [[color(0)]];
+    float depth [[depth(any)]];
+};
+
+fragment FullscreenFragmentOut fullscreenFragment(
     FullscreenVertexOut in [[stage_in]],
-    texture2d<float> renderTexture [[texture(0)]]
+    texture2d<float> renderTexture [[texture(0)]],
+    texture2d<float> depthTexture [[texture(1)]]
 ) {
     constexpr sampler renderSampler(
         mag_filter::linear,
         min_filter::linear,
         address::clamp_to_edge
     );
+    constexpr sampler depthSampler(
+        mag_filter::nearest,
+        min_filter::nearest,
+        address::clamp_to_edge
+    );
 
-    return renderTexture.sample(
+    FullscreenFragmentOut out;
+    out.color = renderTexture.sample(
             renderSampler,
             in.uv
         );
+    out.depth = depthTexture.sample(
+        depthSampler,
+        in.uv
+    ).r;
+    return out;
 }

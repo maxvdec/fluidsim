@@ -47,9 +47,8 @@ float2 calculateVolumeFields(
         }
     }
 
-    float normalizedDensity = saturate(density / max(uniforms.targetDensity * 2.0, 0.0001));
     float normalizedFoam = density > 0.0001 ? saturate(foam / density) : 0.0;
-    return float2(normalizedDensity, normalizedFoam);
+    return float2(density, normalizedFoam);
 }
 
 kernel void renderDensity(

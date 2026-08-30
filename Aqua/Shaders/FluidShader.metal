@@ -17,6 +17,13 @@ struct BoxHit {
     float3 normal;
 };
 
+struct EnvironmentSample {
+    float3 color;
+    float distance;
+    float3 position;
+    bool hit;
+};
+
 inline float2 boxInterval(float3 origin, float3 direction, float3 center, float3 size) {
     float3 safeDirection = select(
         direction,
@@ -163,7 +170,7 @@ inline SurfaceHit raymarchTransition(
     float marchStep = max(stepSize, 0.002);
     float previousT = start;
     float previousField = sampleVolume(origin + direction * previousT, bounds, volume, volumeSampler, isoLevel).x;
-    for (int iteration = 0; iteration < 640; iteration++) {
+    for (int iteration = 0; iteration < 900; iteration++) {
         float currentT = min(previousT + marchStep, finish);
         float currentField = sampleVolume(origin + direction * currentT, bounds, volume, volumeSampler, isoLevel).x;
         bool crossed = entering
@@ -210,7 +217,7 @@ inline float integrateDensity(
 ) {
     float result = 0.0;
     float integrationStep = max(stepSize * 1.5, 0.004);
-    for (int iteration = 0; iteration < 384; iteration++) {
+    for (int iteration = 0; iteration < 512; iteration++) {
         float t = (float(iteration) + 0.5) * integrationStep;
         if (t >= distance) {
             break;
@@ -277,8 +284,9 @@ inline float3 shadeBox(BoxHit hit, float3 direction, float3 baseColor, float rou
     return baseColor * diffuse + specular * 0.75 + sampleSky(reflected) * fresnel * 0.12;
 }
 
-inline float3 sampleEnvironment(float3 origin, float3 direction, constant Uniforms &uniforms) {
+inline EnvironmentSample traceEnvironment(float3 origin, float3 direction, constant Uniforms &uniforms) {
     direction = normalize(direction);
+    EnvironmentSample result = {sampleSky(direction), 1e30, float3(0.0), false};
     float3 platformSize = float3(uniforms.bounds.x * 1.55, 0.45, uniforms.bounds.z * 1.55);
     float3 platformCenter = float3(0.0, -uniforms.bounds.y * 0.5 - platformSize.y * 0.5, 0.0);
     BoxHit platform = intersectBox(origin, direction, platformCenter, platformSize);
@@ -292,7 +300,11 @@ inline float3 sampleEnvironment(float3 origin, float3 direction, constant Unifor
             uniforms.colliderSize.z * 0.5 - abs(cube.position.z - uniforms.colliderPosition.z)
         );
         float edgeLight = 1.0 - smoothstep(0.0, 0.12, edge);
-        return shadeBox(cube, direction, float3(0.82, 0.16, 0.085), 0.26) + edgeLight * 0.08;
+        result.color = shadeBox(cube, direction, float3(0.82, 0.16, 0.085), 0.26) + edgeLight * 0.08;
+        result.distance = cube.t;
+        result.position = cube.position;
+        result.hit = true;
+        return result;
     }
     if (platform.hit) {
         float2 tilePosition = platform.position.xz * 0.72;
@@ -309,9 +321,17 @@ inline float3 sampleEnvironment(float3 origin, float3 direction, constant Unifor
             BoxHit shadowHit = intersectBox(platform.position + platform.normal * 0.002, sunDirection(), uniforms.colliderPosition, uniforms.colliderSize);
             shadow = shadowHit.hit ? 0.28 : 1.0;
         }
-        return shadeBox(platform, direction, base * shadow, 0.72);
+        result.color = shadeBox(platform, direction, base * shadow, 0.72);
+        result.distance = platform.t;
+        result.position = platform.position;
+        result.hit = true;
+        return result;
     }
-    return sampleSky(direction);
+    return result;
+}
+
+inline float3 sampleEnvironment(float3 origin, float3 direction, constant Uniforms &uniforms) {
+    return traceEnvironment(origin, direction, uniforms).color;
 }
 
 inline float fresnelDielectric(float3 direction, float3 normal, float iorA, float iorB) {
@@ -351,8 +371,9 @@ inline float foamMask(SurfaceHit hit, constant Uniforms &uniforms) {
         : 0.0;
     float floorFoam = exp(-abs(hit.position.y + uniforms.bounds.y * 0.5) * 4.0) * 0.18;
     float signal = particleFoam + contactFoam + floorFoam;
-    return saturate(smoothstep(uniforms.foamThreshold, uniforms.foamThreshold + 0.18, signal)
-        * uniforms.foamIntensity);
+    float threshold = saturate(uniforms.foamThreshold * 0.1);
+    return saturate(smoothstep(threshold, threshold + 0.18, signal)
+        * uniforms.foamIntensity * 0.075);
 }
 
 inline float3 acesToneMap(float3 color) {
@@ -367,9 +388,15 @@ inline float3 linearToSRGB(float3 color) {
     return select(high, low, color <= float3(0.0031308));
 }
 
+inline float deviceDepth(float3 position, float4x4 viewProjection) {
+    float4 clip = viewProjection * float4(position, 1.0);
+    return saturate(clip.z / clip.w);
+}
+
 kernel void renderVolume(
     texture3d<float, access::sample> volume [[texture(0)]],
     texture2d<float, access::write> outputTexture [[texture(1)]],
+    texture2d<float, access::write> outputDepth [[texture(2)]],
     constant Uniforms &uniforms [[buffer(0)]],
     uint2 id [[thread_position_in_grid]]
 ) {
@@ -385,13 +412,18 @@ kernel void renderVolume(
     float3 rayOrigin;
     float3 rayDirection;
     generateCameraRay(id, resolution, uniforms.invViewProjectionMatrix, rayOrigin, rayDirection);
-    float3 color = sampleEnvironment(rayOrigin, rayDirection, uniforms);
+    EnvironmentSample primaryEnvironment = traceEnvironment(rayOrigin, rayDirection, uniforms);
+    float3 color = primaryEnvironment.color;
+    float depth = primaryEnvironment.hit
+        ? deviceDepth(primaryEnvironment.position, uniforms.viewProjectionMatrix)
+        : 1.0;
     SurfaceHit entry = raymarchTransition(
         rayOrigin, rayDirection, true, uniforms.bounds, volume,
         volumeSampler, uniforms.stepSize, uniforms.isoLevel
     );
 
-    if (entry.hit) {
+    if (entry.hit && entry.t < primaryEnvironment.distance) {
+        depth = deviceDepth(entry.position, uniforms.viewProjectionMatrix);
         float3 entryNormal = normalize(entry.normal);
         if (dot(entryNormal, rayDirection) > 0.0) {
             entryNormal = -entryNormal;
@@ -411,12 +443,22 @@ kernel void renderVolume(
                 waterOrigin, waterDirection, false, uniforms.bounds, volume,
                 volumeSampler, uniforms.stepSize, uniforms.isoLevel
             );
-            if (exitHit.hit) {
+            EnvironmentSample submergedEnvironment = traceEnvironment(waterOrigin, waterDirection, uniforms);
+            float3 extinction = max(float3(uniforms.scatterR, uniforms.scatterG, uniforms.scatterB), float3(0.0));
+            if (submergedEnvironment.hit && (!exitHit.hit || submergedEnvironment.distance < exitHit.t)) {
+                float opticalDepth = integrateDensity(
+                    waterOrigin, waterDirection, submergedEnvironment.distance, uniforms.bounds, volume,
+                    volumeSampler, uniforms.stepSize, uniforms.isoLevel, uniforms.densityMultiplier
+                );
+                float3 transmittance = exp(-extinction * opticalDepth);
+                float absorbed = 1.0 - dot(transmittance, float3(0.333333));
+                waterLight = submergedEnvironment.color * transmittance
+                    + float3(0.008, 0.055, 0.075) * absorbed;
+            } else if (exitHit.hit) {
                 float opticalDepth = integrateDensity(
                     waterOrigin, waterDirection, exitHit.t, uniforms.bounds, volume,
                     volumeSampler, uniforms.stepSize, uniforms.isoLevel, uniforms.densityMultiplier
                 );
-                float3 extinction = max(float3(uniforms.scatterR, uniforms.scatterG, uniforms.scatterB), float3(0.0));
                 float3 transmittance = exp(-extinction * opticalDepth);
                 float3 exitNormal = normalize(exitHit.normal);
                 if (dot(exitNormal, waterDirection) > 0.0) {
@@ -472,4 +514,5 @@ kernel void renderVolume(
     color *= max(uniforms.brightnessMultiplier, 0.0);
     color = linearToSRGB(acesToneMap(color));
     outputTexture.write(float4(color, 1.0), id);
+    outputDepth.write(float4(depth), id);
 }

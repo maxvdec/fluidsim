@@ -184,3 +184,69 @@ fragment FragmentOut particleFragment(
     );
     return out;
 }
+
+struct FoamVertexOut {
+    float4 position [[position]];
+    float pointSize [[point_size]];
+    float3 viewCenter;
+    float renderRadius;
+    float lifetime;
+    float scale;
+};
+
+vertex FoamVertexOut foamVertex(
+    uint vertexID [[vertex_id]],
+    device const FoamParticle *particles [[buffer(0)]],
+    constant Uniforms &uniforms [[buffer(1)]]
+) {
+    FoamParticle particle = particles[vertexID];
+    FoamVertexOut out;
+    if (particle.lifetime <= 0.0) {
+        out.position = float4(2.0, 2.0, 2.0, 1.0);
+        out.pointSize = 0.0;
+        out.viewCenter = float3(0.0);
+        out.renderRadius = 0.0;
+        out.lifetime = 0.0;
+        out.scale = 0.0;
+        return out;
+    }
+    float4 viewPosition = uniforms.viewMatrix * float4(particle.position, 1.0);
+    out.position = uniforms.projectionMatrix * viewPosition;
+    float radius = uniforms.foamScale * particle.scale * saturate(particle.lifetime / 1.5);
+    float pixelScale = uniforms.projectionMatrix[1][1]
+        / max(-viewPosition.z, 0.001) * uniforms.viewportSize.y * 0.5;
+    out.pointSize = clamp(radius * pixelScale * 2.0, 1.5, 36.0);
+    out.viewCenter = viewPosition.xyz;
+    out.renderRadius = radius;
+    out.lifetime = particle.lifetime;
+    out.scale = particle.scale;
+    return out;
+}
+
+fragment FragmentOut foamFragment(
+    FoamVertexOut in [[stage_in]],
+    float2 pointCoord [[point_coord]],
+    constant Uniforms &uniforms [[buffer(1)]]
+) {
+    float2 xy = pointCoord * 2.0 - 1.0;
+    float radiusSquared = dot(xy, xy);
+    if (radiusSquared > 1.0 || in.lifetime <= 0.0) {
+        discard_fragment();
+    }
+    float z = sqrt(1.0 - radiusSquared);
+    float3 normal = normalize(float3(xy.x, -xy.y, z));
+    float3 lightDirection = normalize(float3(-0.42, 0.78, 0.46));
+    float diffuse = saturate(dot(normal, lightDirection));
+    float rim = pow(1.0 - z, 2.0);
+    float specular = pow(max(dot(normalize(lightDirection + float3(0.0, 0.0, 1.0)), normal), 0.0), 48.0);
+    float3 color = mix(float3(0.62, 0.79, 0.84), float3(0.96, 0.985, 1.0), 0.5 + diffuse * 0.5);
+    color += specular * 0.65 + rim * float3(0.18, 0.3, 0.34);
+    float edgeWidth = max(fwidth(sqrt(radiusSquared)), 0.002);
+    float alpha = 1.0 - smoothstep(1.0 - edgeWidth, 1.0, sqrt(radiusSquared));
+    float3 surfaceViewPosition = in.viewCenter + normal * in.renderRadius;
+    float4 surfaceClip = uniforms.projectionMatrix * float4(surfaceViewPosition, 1.0);
+    FragmentOut out;
+    out.color = float4(color, alpha);
+    out.depth = clamp(surfaceClip.z / surfaceClip.w, 0.0, 1.0);
+    return out;
+}
