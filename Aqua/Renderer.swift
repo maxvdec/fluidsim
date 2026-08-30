@@ -46,7 +46,8 @@ final class SimulationSettings {
 
     var densityResolution: Int = 18
 
-    var textureSlice: Float = 0.5
+    var stepSize: Float = 0.1
+    var densityMultiplier: Float = 1.0
 }
 
 struct MetalView: NSViewRepresentable {
@@ -586,7 +587,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.bounds = SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ)
         uniforms.smoothingRadius = settings.smoothingRadius
         
-        uniforms.textureSlice = settings.textureSlice
+        uniforms.stepSize = settings.stepSize
+        uniforms.densityMultiplier = settings.densityMultiplier
 
         let aspectRatio =
             max(

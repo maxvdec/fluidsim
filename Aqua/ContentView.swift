@@ -202,16 +202,17 @@ struct ParametersView: View {
                 .foregroundStyle(.secondary)
             Divider()
             IntField("Density Texture Resolution", value: $settings.densityResolution, unit: "px")
+            FloatField("Density Multiplier", value: $settings.densityMultiplier, unit: "")
             HStack {
-                Text("Texture Slice")
+                Text("Step Size")
 
                 Slider(
-                    value: $settings.textureSlice,
-                    in: 0 ... 1
+                    value: $settings.stepSize,
+                    in: 0.001 ... 0.5
                 )
 
                 Text(
-                    settings.textureSlice.formatted(
+                    settings.stepSize.formatted(
                         .number.precision(.fractionLength(2))
                     )
                 )

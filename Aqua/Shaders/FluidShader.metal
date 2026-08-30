@@ -59,6 +59,31 @@ inline float3 worldToVolumeUV(
     return position / bounds + 0.5;
 }
 
+inline float raymarchFluid(float3 rayOrigin, float3 rayDirection, float3 bounds, texture3d<float, access::sample> densityTexture, sampler volumeSampler, float stepSize, float densityMultiplier) {
+    float tEnter;
+    float tExit;
+    
+    if (!intersectBox(rayOrigin, rayDirection, bounds, tEnter, tExit)) {
+        return 0.0;
+    }
+    
+    tEnter = max(tEnter, 0.0);
+    
+    float densitySum = 0.0;
+    
+    for (float t = tEnter; t < tExit; t += stepSize) {
+        float3 worldPosition = rayOrigin + rayDirection * t;
+        
+        float3 uvw = worldToVolumeUV(worldPosition, bounds);
+        
+        float density = densityTexture.sample(volumeSampler, uvw).r;
+        
+        densitySum += density * densityMultiplier * stepSize;
+    }
+    
+    return densitySum;
+}
+
 kernel void renderVolume(texture3d<float, access::sample> densityTexture [[texture(0)]], texture2d<float, access::write> outputTexture [[texture(1)]], constant Uniforms &uniforms [[buffer(0)]], uint2 id [[thread_position_in_grid]]) {
     uint width = outputTexture.get_width();
     uint height = outputTexture.get_height();
@@ -67,93 +92,19 @@ kernel void renderVolume(texture3d<float, access::sample> densityTexture [[textu
         return;
     }
     
+    constexpr sampler volumeSampler(
+                                    mag_filter::linear, min_filter::linear, address::clamp_to_edge
+                                    );
+    
     float3 rayOrigin;
     float3 rayDirection;
-
-    generateCameraRay(
-        id,
-        uint2(width, height),
-        uniforms.invViewProjectionMatrix,
-        rayOrigin,
-        rayDirection
-    );
-
-    float slice =
-        clamp(
-            uniforms.textureSlice,
-            0.0,
-            1.0
-        );
-
-    float sliceZ =
-        mix(
-            -uniforms.bounds.z * 0.5,
-             uniforms.bounds.z * 0.5,
-             slice
-        );
-
-    if (abs(rayDirection.z) < 0.000001) {
-        outputTexture.write(
-            float4(0.0),
-            id
-        );
-        return;
-    }
-
-    float t =
-        (sliceZ - rayOrigin.z)
-        / rayDirection.z;
-
-    if (t < 0.0) {
-        outputTexture.write(
-            float4(0.0),
-            id
-        );
-        return;
-    }
-
-    float3 worldPosition =
-        rayOrigin + rayDirection * t;
-
-    float3 halfBounds =
-        uniforms.bounds * 0.5;
-
-    if (
-        abs(worldPosition.x) > halfBounds.x ||
-        abs(worldPosition.y) > halfBounds.y
-    ) {
-        outputTexture.write(
-            float4(0.0),
-            id
-        );
-        return;
-    }
-
-    float3 uvw =
-        worldToVolumeUV(
-            worldPosition,
-            uniforms.bounds
-        );
-
-    constexpr sampler volumeSampler(
-        mag_filter::linear,
-        min_filter::linear,
-        address::clamp_to_edge
-    );
-
-    float density =
-        densityTexture.sample(
-            volumeSampler,
-            uvw
-        ).r;
-
-    outputTexture.write(
-        float4(
-            density,
-            density,
-            density,
-            1.0
-        ),
-        id
-    );
+    
+    generateCameraRay(id, uint2(width, height), uniforms.invViewProjectionMatrix, rayOrigin, rayDirection);
+    
+    float density = raymarchFluid(rayOrigin, rayDirection, uniforms.bounds, densityTexture, volumeSampler, uniforms.stepSize, uniforms.densityMultiplier);
+    
+    float brightness = 1.0 - exp(-density);
+    
+    outputTexture.write(float4(brightness, brightness, brightness, 1.0), id);
+    
 }
