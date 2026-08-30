@@ -67,6 +67,12 @@ struct Camera {
         )
     }
 
+    var up: SIMD3<Float> {
+        simd_normalize(
+            simd_cross(right, forward)
+        )
+    }
+
     mutating func setMoving(
         _ direction: CameraMoveDirection,
         active: Bool

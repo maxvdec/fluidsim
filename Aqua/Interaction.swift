@@ -20,16 +20,18 @@ struct MouseInteractionState {
     var isActive: Bool = false
     var mode: MouseMode = .none
     
-    var currentSimPosition: SIMD2<Float> = .zero
-    var previousSimPosition: SIMD2<Float> = .zero
-    var simVelocity: SIMD2<Float> = .zero
+    var currentSimPosition: SIMD3<Float> = .zero
+    var previousSimPosition: SIMD3<Float> = .zero
+    var simVelocity: SIMD3<Float> = .zero
+    var interactionPlanePoint: SIMD3<Float> = .zero
+    var interactionPlaneNormal: SIMD3<Float> = SIMD3<Float>(0, 0, -1)
 
     var radius: Float = 0.4
     var strength: Float = 20.0
 }
 
 final class SimulationMTKView: MTKView {
-    var onLeftMouseDown: ((CGPoint) -> Void)?
+    var onLeftMouseDown: ((CGPoint, MouseMode) -> Void)?
     var onLeftMouseDragged: ((CGPoint) -> Void)?
     var onLeftMouseUp: (() -> Void)?
 
@@ -53,7 +55,11 @@ final class SimulationMTKView: MTKView {
             from: nil
         )
 
-        onLeftMouseDown?(point)
+        let mode: MouseMode = event.modifierFlags.contains(.shift)
+            ? .repel
+            : .grab
+
+        onLeftMouseDown?(point, mode)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -71,8 +77,6 @@ final class SimulationMTKView: MTKView {
 
     override func rightMouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-
-        super.rightMouseDown(with: event)
     }
 
     override func rightMouseDragged(with event: NSEvent) {

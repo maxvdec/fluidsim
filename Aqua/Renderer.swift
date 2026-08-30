@@ -18,22 +18,22 @@ final class SimulationSettings {
     var paused = true
     
     var gravity: Float = 9.81 // m/s^2
-    var particleRadius: Float = 0.025 // m
+    var particleRadius: Float = 0.08 // m
     
     var ppm: Float = 20
     
     var timeScale: Float = 1.0
     
-    var boundsX: Float = 40.0 // m
-    var boundsY: Float = 20.0 // m
-    var boundsZ: Float = 20.0 // m
+    var boundsX: Float = 5.0 // m
+    var boundsY: Float = 2.0 // m
+    var boundsZ: Float = 2.0 // m
     var boundaryViewportPadding: Float = 10.0
     
-    var particles: Int = 10000
-    var particleSpacing: Float = 0.142
+    var particles: Int = 1000
+    var particleSpacing: Float = 0.275
     var randomScattering: Bool = false
     
-    var smoothingRadius: Float = 0.5 // m
+    var smoothingRadius: Float = 0.75 // m
     
     var targetDensity: Float = 100.0
     var pressureMultiplier: Float = 500.0
@@ -41,7 +41,7 @@ final class SimulationSettings {
     var nearPressureMultiplier: Float = 0.1
     var particleMass: Float = 2.0
     
-    var mouseStrength: Float = 200.0
+    var mouseStrength: Float = 20.0
     var mouseRadius: Float = 1.2
 }
 
@@ -74,11 +74,11 @@ struct MetalView: NSViewRepresentable {
         view.enableSetNeedsDisplay = false
         view.isPaused = false
 
-        view.onLeftMouseDown = { point in
+        view.onLeftMouseDown = { point, mode in
             renderer.beginMouseInteraction(
                 at: point,
                 in: view,
-                mode: .repel
+                mode: mode
             )
         }
 
@@ -248,6 +248,13 @@ func createRenderPipeline(vertex: String, fragment: String, device: MTLDevice) t
     descriptor.vertexFunction = vertexFunction
     descriptor.fragmentFunction = fragmentFunction
     descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+    descriptor.colorAttachments[0].isBlendingEnabled = true
+    descriptor.colorAttachments[0].rgbBlendOperation = .add
+    descriptor.colorAttachments[0].alphaBlendOperation = .add
+    descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+    descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
+    descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+    descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
     descriptor.depthAttachmentPixelFormat = .depth32Float
     descriptor.rasterSampleCount = 4
     
@@ -352,6 +359,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastFrameTime: CFTimeInterval?
     
     private var lastRandomScattering: Bool = false
+    private var lastParticleSpacing: Float = .nan
+    private var lastParticleRadius: Float = .nan
+    private var lastGenerationBounds: SIMD3<Float> = .zero
     
     private var mouseInteractionState: MouseInteractionState = .init()
     
@@ -434,6 +444,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.cellStartIndices = MTLSyncBuffer(device: device, values: createCellStartIndices(particleCount: initialParticles.count))
         
         self.lastRandomScattering = settings.randomScattering
+        self.lastParticleSpacing = settings.particleSpacing
+        self.lastParticleRadius = settings.particleRadius
+        self.lastGenerationBounds = SIMD3<Float>(
+            settings.boundsX,
+            settings.boundsY,
+            settings.boundsZ
+        )
         
         self.densityTexture = createDensityTexture(device: device, width: 1, height: 1)
         
@@ -448,6 +465,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             target: .zero,
             distance: initialCameraDistance
         )
+        self.camera.yaw = 0.55
+        self.camera.pitch = 0.28
         
         super.init()
     }
@@ -501,7 +520,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.viscosityStrength = settings.viscosityStrength
         uniforms.nearPressureMultiplier = settings.nearPressureMultiplier
         
-        updateMouseInteractionForFrame(dt: uniforms.dt)
+        updateMouseInteractionForFrame(
+            dt: min(dt, 1.0 / 30.0) * settings.timeScale
+        )
         
         uniforms.mousePosition = mouseInteractionState.currentSimPosition
         uniforms.mouseVelocity = mouseInteractionState.simVelocity
@@ -512,9 +533,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         if settings.paused {
             bounds.assign(new: createBounds(settings: settings))
             let requestedParticleCount = max(1, settings.particles)
-            let shouldRegenerateParticles = !settings.randomScattering
-                || lastRandomScattering != settings.randomScattering
+            let generationBounds = SIMD3<Float>(
+                settings.boundsX,
+                settings.boundsY,
+                settings.boundsZ
+            )
+            let shouldRegenerateParticles = lastRandomScattering != settings.randomScattering
                 || particles.count != requestedParticleCount
+                || lastParticleSpacing != settings.particleSpacing
+                || lastParticleRadius != settings.particleRadius
+                || lastGenerationBounds != generationBounds
 
             if shouldRegenerateParticles {
                 let newParticles = createParticles(n: requestedParticleCount, wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing)
@@ -526,6 +554,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
 
             lastRandomScattering = settings.randomScattering
+            lastParticleSpacing = settings.particleSpacing
+            lastParticleRadius = settings.particleRadius
+            lastGenerationBounds = generationBounds
         }
 
         uniforms.particleCount = UInt32(particles.count)
@@ -860,7 +891,6 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
         }
         
-        encodeDensityPass(commandBuffer)
         encodeRendering(commandBuffer, descriptor: descriptor)
         
         commandBuffer.present(drawable)
@@ -868,14 +898,138 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
     
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    private func mouseRay(
+        at point: CGPoint,
+        in view: MTKView
+    ) -> (origin: SIMD3<Float>, direction: SIMD3<Float>)? {
+        guard view.bounds.width > 0, view.bounds.height > 0 else {
+            return nil
+        }
+
+        let normalizedX = Float(
+            (point.x - view.bounds.minX) / view.bounds.width
+        )
+        let normalizedY = view.isFlipped
+            ? Float((view.bounds.maxY - point.y) / view.bounds.height)
+            : Float((point.y - view.bounds.minY) / view.bounds.height)
+        let ndcX = normalizedX * 2.0 - 1.0
+        let ndcY = normalizedY * 2.0 - 1.0
+        let aspect = Float(view.bounds.width / view.bounds.height)
+        let halfHeight = tan(camera.fovY * 0.5)
+        let halfWidth = halfHeight * aspect
+        let direction = simd_normalize(
+            camera.forward
+                + camera.right * ndcX * halfWidth
+                + camera.up * ndcY * halfHeight
+        )
+
+        return (camera.position, direction)
+    }
+
+    private func rayBoxInterval(
+        origin: SIMD3<Float>,
+        direction: SIMD3<Float>
+    ) -> (entry: Float, exit: Float)? {
+        let halfBounds = SIMD3<Float>(
+            settings.boundsX,
+            settings.boundsY,
+            settings.boundsZ
+        ) * 0.5
+        var entry = -Float.infinity
+        var exit = Float.infinity
+
+        for axis in 0 ..< 3 {
+            if abs(direction[axis]) < 0.000001 {
+                if origin[axis] < -halfBounds[axis]
+                    || origin[axis] > halfBounds[axis] {
+                    return nil
+                }
+                continue
+            }
+
+            let first = (-halfBounds[axis] - origin[axis]) / direction[axis]
+            let second = (halfBounds[axis] - origin[axis]) / direction[axis]
+            entry = max(entry, min(first, second))
+            exit = min(exit, max(first, second))
+
+            if exit < entry {
+                return nil
+            }
+        }
+
+        guard exit >= max(entry, 0.0) else {
+            return nil
+        }
+
+        return (max(entry, 0.0), exit)
+    }
+
+    private func interactionPosition(
+        at point: CGPoint,
+        in view: MTKView
+    ) -> SIMD3<Float>? {
+        guard let ray = mouseRay(at: point, in: view) else {
+            return nil
+        }
+
+        let normal = mouseInteractionState.interactionPlaneNormal
+        let denominator = simd_dot(ray.direction, normal)
+
+        guard abs(denominator) > 0.000001 else {
+            return nil
+        }
+
+        let distance = simd_dot(
+            mouseInteractionState.interactionPlanePoint - ray.origin,
+            normal
+        ) / denominator
+
+        guard distance >= 0 else {
+            return nil
+        }
+
+        return ray.origin + ray.direction * distance
+    }
     
     func beginMouseInteraction(at point: CGPoint, in view: MTKView, mode: MouseMode) {
+        guard let ray = mouseRay(at: point, in: view),
+              let interval = rayBoxInterval(
+                origin: ray.origin,
+                direction: ray.direction
+              )
+        else {
+            return
+        }
+
+        let planeNormal = camera.forward
+        let planeDenominator = simd_dot(ray.direction, planeNormal)
+        let targetDistance = abs(planeDenominator) > 0.000001
+            ? simd_dot(camera.target - ray.origin, planeNormal) / planeDenominator
+            : (interval.entry + interval.exit) * 0.5
+        let interactionDistance = min(
+            interval.exit,
+            max(interval.entry, targetDistance)
+        )
+        let simPosition = ray.origin + ray.direction * interactionDistance
+
         mouseInteractionState.isActive = true
         mouseInteractionState.mode = mode
+        mouseInteractionState.currentSimPosition = simPosition
+        mouseInteractionState.previousSimPosition = simPosition
         mouseInteractionState.simVelocity = .zero
+        mouseInteractionState.interactionPlanePoint = simPosition
+        mouseInteractionState.interactionPlaneNormal = planeNormal
     }
     
     func updateMouseInteraction(at point: CGPoint, in view: MTKView) {
+        guard mouseInteractionState.isActive,
+              let simPosition = interactionPosition(at: point, in: view)
+        else {
+            return
+        }
+
+        mouseInteractionState.currentSimPosition = simPosition
     }
     
     func endMouseInteraction() {
@@ -917,6 +1071,16 @@ final class Renderer: NSObject, MTKViewDelegate {
     func zoomCamera(
         delta: Float
     ) {
+        if mouseInteractionState.isActive {
+            let depthDelta = delta * max(camera.distance * 0.002, 0.01)
+            let offset = mouseInteractionState.interactionPlaneNormal * depthDelta
+            mouseInteractionState.interactionPlanePoint += offset
+            mouseInteractionState.currentSimPosition += offset
+            mouseInteractionState.previousSimPosition = mouseInteractionState.currentSimPosition
+            mouseInteractionState.simVelocity = .zero
+            return
+        }
+
         camera.zoom(delta: delta)
     }
 

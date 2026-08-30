@@ -41,7 +41,7 @@ float calculateDensityForPass(
                 for (uint ghostIndex = 0; ghostIndex < 26; ghostIndex++) {
                     int3 direction = getBoundaryGhostDirection(ghostIndex);
                     if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, direction)) {
-                        float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, ghostIndex);
+                        float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, direction);
                         float ghostDst = length(ghostPosition - samplePos);
                         density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, ghostDst);
                     }
@@ -65,7 +65,23 @@ kernel void renderDensity(device const Particle* particles [[buffer(0)]], device
         return;
     }
     
-    float2 uv = float2(gid) / float2(width - 1, height - 1);
-    
-    output.write(float4(uv, 0.0, 1.0), gid);
+    float2 dimensions = max(
+        float2(width - 1, height - 1),
+        float2(1.0)
+    );
+    float2 uv = float2(gid) / dimensions;
+    float3 samplePos = float3(
+        (uv.x - 0.5) * uniforms.bounds.x,
+        (uv.y - 0.5) * uniforms.bounds.y,
+        0.0
+    );
+    float density = calculateDensityForPass(
+        particles,
+        lookupEntries,
+        cellStartIndices,
+        samplePos,
+        uniforms
+    );
+
+    output.write(float4(density, 0.0, 0.0, 1.0), gid);
 }

@@ -123,7 +123,7 @@ struct FloatField: View {
 
 struct ParametersView: View {
     @Binding var settings: SimulationSettings
-    @State private var wantsMouse: Bool = false
+    @State private var wantsMouse: Bool = true
 
     var body: some View {
         HStack {
@@ -197,6 +197,9 @@ struct ParametersView: View {
             Toggle(isOn: $wantsMouse) {
                 Text("Mouse Activated")
             }
+            Text("Drag to grab • Shift-drag to repel • Right-drag to orbit • Scroll to zoom or adjust grab depth")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             
             
             

@@ -43,7 +43,7 @@ float2 calculateDensitiesAtPosition(
                 for (uint ghostIndex = 0; ghostIndex < 26; ghostIndex++) {
                     int3 direction = getBoundaryGhostDirection(ghostIndex);
                     if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, direction)) {
-                        float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, ghostIndex);
+                        float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, direction);
                         float ghostDst = length(ghostPosition - samplePos);
                         density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, ghostDst);
                         nearDensity += uniforms.particleMass * nearDensityKernel(uniforms.smoothingRadius, ghostDst);
@@ -104,7 +104,7 @@ float3 calculatePressureForce(
                 for (uint ghostIndex = 0; ghostIndex < 26; ghostIndex++) {
                     int3 direction = getBoundaryGhostDirection(ghostIndex);
                     if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, direction)) {
-                        float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, ghostIndex);
+                        float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, direction);
                         float3 ghostOffset = ghostPosition - samplePos;
                         float ghostDst = length(ghostOffset);
 
@@ -225,6 +225,32 @@ kernel void simulateParticles(
         + float3(0.0, -uniforms.gravity, 0.0);
     p.velocity += acceleration * uniforms.dt;
 
+    float3 mouseOffset = p.position - uniforms.mousePosition;
+    float mouseDistance = length(mouseOffset);
+
+    if (uniforms.mouseMode != 0 && mouseDistance < uniforms.mouseRadius) {
+        float influence = 1.0 - mouseDistance / max(uniforms.mouseRadius, 0.0001);
+        float3 direction = mouseDistance > 0.0001
+            ? mouseOffset / mouseDistance
+            : float3(0.0);
+
+        if (uniforms.mouseMode == 1) {
+            influence *= influence;
+            float3 radialPush = direction * uniforms.mouseStrength;
+            float3 sweepPush = uniforms.mouseVelocity * 2.0;
+            p.velocity += (radialPush + sweepPush) * influence * uniforms.dt;
+        } else if (uniforms.mouseMode == 2) {
+            float bowlRadius = uniforms.mouseRadius * 0.7;
+            float containmentDistance = max(0.0, mouseDistance - bowlRadius);
+            float3 containmentVelocity = -direction * containmentDistance * 6.0;
+            float3 desiredVelocity = uniforms.mouseVelocity + containmentVelocity;
+            float response = 1.0 - exp(
+                -max(0.0, uniforms.mouseStrength) * influence * uniforms.dt
+            );
+            p.velocity = mix(p.velocity, desiredVelocity, response);
+        }
+    }
+
     if (uniforms.dt > 0.0) {
         float speed = length(p.velocity);
         float maxSpeed = uniforms.smoothingRadius * 0.4 / uniforms.dt;
@@ -244,11 +270,19 @@ kernel void simulateParticles(
         if (abs(p.position.x) > limit.x) {
             p.velocity.x *= -0.25;
             p.velocity.y *= 0.98;
+            p.velocity.z *= 0.98;
         }
 
         if (abs(p.position.y) > limit.y) {
             p.velocity.y *= -0.25;
             p.velocity.x *= 0.98;
+            p.velocity.z *= 0.98;
+        }
+
+        if (abs(p.position.z) > limit.z) {
+            p.velocity.z *= -0.25;
+            p.velocity.x *= 0.98;
+            p.velocity.y *= 0.98;
         }
 
         p.position = getBoundContactPosition(p.position, bounds, uniforms.particleSize);

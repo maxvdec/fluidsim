@@ -41,8 +41,8 @@ struct Uniforms {
 
     unsigned int spatialEntryCount;
     
-    simd_float2 mousePosition;
-    simd_float2 mouseVelocity;
+    simd_float3 mousePosition;
+    simd_float3 mouseVelocity;
     float mouseRadius;
     float mouseStrength;
     unsigned int mouseMode; // 0 (none), 1 (repel), 2 (grab)

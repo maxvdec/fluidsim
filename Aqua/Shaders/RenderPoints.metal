@@ -16,6 +16,13 @@ struct VertexOut {
     
     float speed;
     float3 worldPosition;
+    float3 viewCenter;
+    float renderRadius;
+};
+
+struct FragmentOut {
+    float4 color [[color(0)]];
+    float depth [[depth(any)]];
 };
 
 vertex VertexOut particleVertex(uint vertexID [[vertex_id]], device const Particle *particles [[buffer(0)]],
@@ -33,16 +40,19 @@ vertex VertexOut particleVertex(uint vertexID [[vertex_id]], device const Partic
     
     float distanceFromCamera = max(-viewPosition.z, 0.001);
     
-    float radiusPixels = uniforms.particleSize * projectionScale / distanceFromCamera * uniforms.viewportSize.y * 0.5;
-    out.pointSize = radiusPixels * 2;
+    float pixelScale = projectionScale / distanceFromCamera * uniforms.viewportSize.y * 0.5;
+    float radiusPixels = clamp(uniforms.particleSize * pixelScale, 2.0, 64.0);
+    out.pointSize = radiusPixels * 2.0;
     
     out.speed = length(particle.velocity);
     out.worldPosition = particle.position;
+    out.viewCenter = viewPosition.xyz;
+    out.renderRadius = radiusPixels / max(pixelScale, 0.0001);
     
     return out;
 }
 
-fragment float4 particleFragment(
+fragment FragmentOut particleFragment(
     VertexOut in [[stage_in]],
     float2 pointCoord [[point_coord]],
     constant Uniforms &uniforms [[buffer(1)]]
@@ -77,7 +87,12 @@ fragment float4 particleFragment(
 
     float3 baseColor;
 
-    if (t < 0.5) {
+    bool isSelected = uniforms.mouseMode != 0
+        && distance(in.worldPosition, uniforms.mousePosition) < uniforms.mouseRadius;
+
+    if (isSelected) {
+        baseColor = float3(0.2, 0.9, 1.0);
+    } else if (t < 0.5) {
         baseColor = mix(
             blue,
             green,
@@ -140,8 +155,15 @@ fragment float4 particleFragment(
             radius
         );
 
-    return float4(
-        color,
-        alpha
+    float3 surfaceViewPosition = in.viewCenter + normal * in.renderRadius;
+    float4 surfaceClipPosition = uniforms.projectionMatrix * float4(surfaceViewPosition, 1.0);
+
+    FragmentOut out;
+    out.color = float4(color, alpha);
+    out.depth = clamp(
+        surfaceClipPosition.z / surfaceClipPosition.w,
+        0.0,
+        1.0
     );
+    return out;
 }
