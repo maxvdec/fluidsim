@@ -68,24 +68,71 @@ struct FloatField: View {
     let title: String
     let unit: String
     let isZeroPermitted: Bool
+    let dragSensitivity: Float
 
     @State private var text: String = ""
+    @State private var dragStartValue: Float?
+    @State private var isDragging = false
 
     init(
         _ title: String,
         value: Binding<Float>,
         unit: String,
-        isZeroPermitted: Bool = false
+        isZeroPermitted: Bool = false,
+        dragSensitivity: Float = 0.01
     ) {
         self.title = title
         self._value = value
         self.unit = unit
         self.isZeroPermitted = isZeroPermitted
+        self.dragSensitivity = dragSensitivity
     }
 
     var body: some View {
         HStack {
             Text(title)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    if hovering {
+                        NSCursor.resizeLeftRight.set()
+                    } else {
+                        NSCursor.arrow.set()
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 1)
+                        .onChanged { gesture in
+                            if dragStartValue == nil {
+                                dragStartValue = value
+                                isDragging = true
+                            }
+
+                            guard let startValue = dragStartValue else {
+                                return
+                            }
+
+                            var sensitivity = dragSensitivity
+
+                            if NSEvent.modifierFlags.contains(.shift) {
+                                sensitivity *= 0.1
+                            }
+
+                            var newValue =
+                                startValue
+                                + Float(gesture.translation.width) * sensitivity
+
+                            if !isZeroPermitted && abs(newValue) < 0.000001 {
+                                newValue = sensitivity
+                            }
+
+                            value = newValue
+                            text = format(newValue)
+                        }
+                        .onEnded { _ in
+                            dragStartValue = nil
+                            isDragging = false
+                        }
+                )
 
             Spacer()
 
@@ -94,12 +141,19 @@ struct FloatField: View {
                 .frame(width: 90)
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: text) { _, newValue in
-                    if let number = Float(newValue) {
-                        if number == 0 && !isZeroPermitted {
-                            return
-                        }
-                        value = number
+                    guard !isDragging else {
+                        return
                     }
+
+                    guard let number = Float(newValue) else {
+                        return
+                    }
+
+                    if number == 0 && !isZeroPermitted {
+                        return
+                    }
+
+                    value = number
                 }
 
             Text(unit)
@@ -110,6 +164,10 @@ struct FloatField: View {
             text = format(value)
         }
         .onChange(of: value) { _, newValue in
+            guard !isDragging else {
+                return
+            }
+
             if Float(text) != newValue {
                 text = format(newValue)
             }
@@ -123,6 +181,7 @@ struct FloatField: View {
 
 struct ParametersView: View {
     @Binding var settings: SimulationSettings
+    @Binding var renderer: Renderer
     @State private var wantsMouse: Bool = true
 
     var body: some View {
@@ -143,89 +202,105 @@ struct ParametersView: View {
     }
 
     var parameterList: some View {
-        VStack {
-            Text("Parameters")
-                .font(.largeTitle)
-                .bold()
-
-            FloatField("Gravity", value: $settings.gravity, unit: "m/s2", isZeroPermitted: true)
-            HStack {
-                Text("Smoothing Radius: ")
-                Slider(value: $settings.smoothingRadius, in: 0.1 ... 10.0)
-                Text(settings.smoothingRadius.formatted(.number.precision(.fractionLength(2))))
-            }
-            HStack {
-                Text("Target Density")
-                Slider(value: $settings.targetDensity, in: 1 ... 500)
-                Text(settings.targetDensity.formatted(.number.precision(.fractionLength(2))))
-            }
-            FloatField("Pressure Multiplier", value: $settings.pressureMultiplier, unit: "")
-            FloatField("Near Pressure Multiplier", value: $settings.nearPressureMultiplier, unit: "")
-            FloatField("Viscosity Strength", value: $settings.viscosityStrength, unit: "")
-            FloatField("Particle Mass", value: $settings.particleMass, unit: "")
-            Divider()
-            FloatField("Bounds X", value: $settings.boundsX, unit: "m")
-            FloatField("Bounds Y", value: $settings.boundsY, unit: "m")
-            FloatField("Bounds Z", value: $settings.boundsZ, unit: "m")
-            VStack(alignment: .leading) {
-                Text("Boundary Viewport Padding")
+        ScrollView {
+            VStack {
+                Text("Parameters")
+                    .font(.largeTitle)
+                    .bold()
+                
+                FloatField("Gravity", value: $settings.gravity, unit: "m/s2", isZeroPermitted: true)
                 HStack {
-                    Slider(value: $settings.boundaryViewportPadding, in: -50 ... 45)
-                    Text(settings.boundaryViewportPadding.formatted(.number.precision(.fractionLength(0))))
-                    Text("%")
+                    Text("Smoothing Radius: ")
+                    Slider(value: $settings.smoothingRadius, in: 0.1 ... 10.0)
+                    Text(settings.smoothingRadius.formatted(.number.precision(.fractionLength(2))))
+                }
+                HStack {
+                    Text("Target Density")
+                    Slider(value: $settings.targetDensity, in: 1 ... 500)
+                    Text(settings.targetDensity.formatted(.number.precision(.fractionLength(2))))
+                }
+                FloatField("Pressure Multiplier", value: $settings.pressureMultiplier, unit: "")
+                FloatField("Near Pressure Multiplier", value: $settings.nearPressureMultiplier, unit: "")
+                FloatField("Viscosity Strength", value: $settings.viscosityStrength, unit: "")
+                FloatField("Particle Mass", value: $settings.particleMass, unit: "")
+                Divider()
+                FloatField("Bounds X", value: $settings.boundsX, unit: "m")
+                FloatField("Bounds Y", value: $settings.boundsY, unit: "m")
+                FloatField("Bounds Z", value: $settings.boundsZ, unit: "m")
+                VStack(alignment: .leading) {
+                    Text("Boundary Viewport Padding")
+                    HStack {
+                        Slider(value: $settings.boundaryViewportPadding, in: -50 ... 45)
+                        Text(settings.boundaryViewportPadding.formatted(.number.precision(.fractionLength(0))))
+                        Text("%")
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(boundaryViewportPaddingDescription)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text(boundaryViewportPaddingDescription)
+                IntField("Particles", value: $settings.particles, unit: "part.")
+                HStack {
+                    Text("Particle Radius: ")
+                    Slider(value: $settings.particleRadius, in: 0.001 ... 1.0)
+                }
+                HStack {
+                    Text("Particle Spacing: ")
+                    Slider(value: $settings.particleSpacing, in: 0.001 ... 0.3)
+                }
+                Toggle(isOn: $settings.randomScattering) {
+                    Text("Scatter randomly")
+                }
+                Divider()
+                FloatField("Mouse Radius", value: $settings.mouseRadius, unit: "")
+                FloatField("Mouse Strength", value: $settings.mouseStrength, unit: "")
+                Toggle(isOn: $wantsMouse) {
+                    Text("Mouse Activated")
+                }
+                Text("Drag to grab • Shift-drag to repel • Right-drag to orbit • Scroll to zoom or adjust grab depth")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            IntField("Particles", value: $settings.particles, unit: "part.")
-            HStack {
-                Text("Particle Radius: ")
-                Slider(value: $settings.particleRadius, in: 0.001 ... 1.0)
-            }
-            HStack {
-                Text("Particle Spacing: ")
-                Slider(value: $settings.particleSpacing, in: 0.001 ... 0.3)
-            }
-            Toggle(isOn: $settings.randomScattering) {
-                Text("Scatter randomly")
-            }
-            Divider()
-            FloatField("Mouse Radius", value: $settings.mouseRadius, unit: "")
-            FloatField("Mouse Strength", value: $settings.mouseStrength, unit: "")
-            Toggle(isOn: $wantsMouse) {
-                Text("Mouse Activated")
-            }
-            Text("Drag to grab • Shift-drag to repel • Right-drag to orbit • Scroll to zoom or adjust grab depth")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Divider()
-            IntField("Density Texture Resolution", value: $settings.densityResolution, unit: "px")
-            FloatField("Density Multiplier", value: $settings.densityMultiplier, unit: "")
-            HStack {
-                Text("Step Size")
-
-                Slider(
-                    value: $settings.stepSize,
-                    in: 0.001 ... 0.5
-                )
-
-                Text(
-                    settings.stepSize.formatted(
-                        .number.precision(.fractionLength(2))
+                Divider()
+                IntField("Density Texture Resolution", value: $settings.densityResolution, unit: "px")
+                Text("Actual resolution is: \(densityResolution(maxResolution: settings.densityResolution, bounds: SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ)))")
+                FloatField("Density Multiplier", value: $settings.densityMultiplier, unit: "")
+                FloatField("ISO Level", value: $settings.isoLevel, unit: "")
+                HStack {
+                    Text("Step Size")
+                    
+                    Slider(
+                        value: $settings.stepSize,
+                        in: 0.001 ... 0.5
                     )
-                )
-            }
-
-            Spacer()
-            Button {
-                settings.paused.toggle()
-            } label: {
-                if settings.paused {
-                    Image(systemName: "play")
-                } else {
-                    Image(systemName: "pause")
+                    
+                    Text(
+                        settings.stepSize.formatted(
+                            .number.precision(.fractionLength(2))
+                        )
+                    )
+                }
+                
+                Divider()
+                FloatField("Scatter R", value: $settings.scatterR, unit: "")
+                FloatField("Scatter G", value: $settings.scatterB, unit: "")
+                FloatField("Scatter B", value: $settings.scatterG, unit: "")
+                
+                Spacer()
+                HStack {
+                    Button {
+                        settings.paused.toggle()
+                    } label: {
+                        if settings.paused {
+                            Image(systemName: "play")
+                        } else {
+                            Image(systemName: "pause")
+                        }
+                    }
+                    Button {
+                        renderer.resetSimulation()
+                    } label: {
+                        Image(systemName: "restart")
+                    }
                 }
             }
         }
@@ -267,7 +342,7 @@ struct ContentView: View {
             MetalView(renderer: renderer)
         }
         .overlay {
-            ParametersView(settings: $settings)
+            ParametersView(settings: $settings, renderer: $renderer)
         }
     }
 }

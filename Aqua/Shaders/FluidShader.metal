@@ -10,6 +10,12 @@
 #include "../MetalUtils.h"
 using namespace metal;
 
+struct FluidSurfaceHit {
+    bool hit;
+    float3 position;
+    float density;
+};
+
 inline bool intersectBox(float3 rayOrigin, float3 rayDirection, float3 bounds, thread float &tEnter, thread float &tExit) {
     float3 halfBounds = bounds * 0.5;
     
@@ -59,29 +65,128 @@ inline float3 worldToVolumeUV(
     return position / bounds + 0.5;
 }
 
-inline float raymarchFluid(float3 rayOrigin, float3 rayDirection, float3 bounds, texture3d<float, access::sample> densityTexture, sampler volumeSampler, float stepSize, float densityMultiplier) {
+inline float sampleDensityFluid(float3 position, float3 bounds, texture3d<float, access::sample> densityTexture, sampler volumeSampler, float isoLevel) {
+    float3 uvw = position / bounds + 0.5;
+    
+    if (any(uvw <= 0.001) || any(uvw >= 0.999)) {
+        return -isoLevel;
+    }
+    
+    return densityTexture.sample(volumeSampler, uvw).r - isoLevel;
+}
+
+inline float sampleField(
+    float3 p,
+    float3 bounds,
+    texture3d<float, access::sample> tex,
+    sampler s,
+    float iso
+) {
+    float3 uvw = p / bounds + 0.5;
+
+    if (any(uvw <= 0.001) || any(uvw >= 0.999)) {
+        return -iso;
+    }
+
+    return tex.sample(s, uvw).r - iso;
+}
+
+inline float3 calculateVolumeNormal(
+    float3 p,
+    float3 bounds,
+    texture3d<float, access::sample> tex,
+    sampler s,
+    float iso
+) {
+    float3 voxelSize = bounds / float3(
+        tex.get_width(),
+        tex.get_height(),
+        tex.get_depth()
+    );
+
+    float dx =
+        sampleField(p - float3(voxelSize.x, 0, 0), bounds, tex, s, iso) -
+        sampleField(p + float3(voxelSize.x, 0, 0), bounds, tex, s, iso);
+
+    float dy =
+        sampleField(p - float3(0, voxelSize.y, 0), bounds, tex, s, iso) -
+        sampleField(p + float3(0, voxelSize.y, 0), bounds, tex, s, iso);
+
+    float dz =
+        sampleField(p - float3(0, 0, voxelSize.z), bounds, tex, s, iso) -
+        sampleField(p + float3(0, 0, voxelSize.z), bounds, tex, s, iso);
+
+    return normalize(float3(dx, dy, dz));
+}
+
+inline FluidSurfaceHit raymarchFluidSurface(
+    float3 rayOrigin,
+    float3 rayDirection,
+    float3 bounds,
+    texture3d<float, access::sample> densityTexture,
+    sampler volumeSampler,
+    float stepSize,
+    float isoLevel
+) {
+    FluidSurfaceHit result;
+    result.hit = false;
+    result.position = float3(0.0);
+    result.density = 0.0;
+
     float tEnter;
     float tExit;
-    
-    if (!intersectBox(rayOrigin, rayDirection, bounds, tEnter, tExit)) {
-        return 0.0;
+
+    if (!intersectBox(
+        rayOrigin,
+        rayDirection,
+        bounds,
+        tEnter,
+        tExit
+    )) {
+        return result;
     }
-    
+
     tEnter = max(tEnter, 0.0);
-    
-    float densitySum = 0.0;
-    
-    for (float t = tEnter; t < tExit; t += stepSize) {
-        float3 worldPosition = rayOrigin + rayDirection * t;
-        
-        float3 uvw = worldToVolumeUV(worldPosition, bounds);
-        
-        float density = densityTexture.sample(volumeSampler, uvw).r;
-        
-        densitySum += density * densityMultiplier * stepSize;
+
+    float previousT = tEnter;
+
+    float previousField = sampleDensityFluid(
+        rayOrigin + rayDirection * previousT,
+        bounds,
+        densityTexture,
+        volumeSampler,
+        isoLevel
+    );
+
+    for (
+        float t = tEnter + stepSize;
+        t < tExit;
+        t += stepSize
+    ) {
+        float3 worldPosition =
+            rayOrigin + rayDirection * t;
+
+        float field = sampleDensityFluid(
+            worldPosition,
+            bounds,
+            densityTexture,
+            volumeSampler,
+            isoLevel
+        );
+
+        if (previousField <= 0.0 && field > 0.0) {
+            result.hit = true;
+            result.position = worldPosition;
+            result.density = field + isoLevel;
+
+            return result;
+        }
+
+        previousField = field;
+        previousT = t;
     }
-    
-    return densitySum;
+
+    return result;
 }
 
 kernel void renderVolume(texture3d<float, access::sample> densityTexture [[texture(0)]], texture2d<float, access::write> outputTexture [[texture(1)]], constant Uniforms &uniforms [[buffer(0)]], uint2 id [[thread_position_in_grid]]) {
@@ -101,10 +206,16 @@ kernel void renderVolume(texture3d<float, access::sample> densityTexture [[textu
     
     generateCameraRay(id, uint2(width, height), uniforms.invViewProjectionMatrix, rayOrigin, rayDirection);
     
-    float density = raymarchFluid(rayOrigin, rayDirection, uniforms.bounds, densityTexture, volumeSampler, uniforms.stepSize, uniforms.densityMultiplier);
+    FluidSurfaceHit hit = raymarchFluidSurface(rayOrigin, rayDirection, uniforms.bounds, densityTexture, volumeSampler, uniforms.stepSize, uniforms.isoLevel);
     
-    float brightness = 1.0 - exp(-density);
+    if (!hit.hit) {
+        outputTexture.write(float4(0.0, 0.0, 0.0, 1.0), id);
+        return;
+    }
     
-    outputTexture.write(float4(brightness, brightness, brightness, 1.0), id);
+    float brighness = 1.0 - exp(-hit.density * uniforms.densityMultiplier);
     
+    float3 scatter = float3(uniforms.scatterR, uniforms.scatterG, uniforms.scatterB);
+    
+    outputTexture.write(float4(scatter * bri, 1.0), id);
 }

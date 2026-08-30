@@ -41,13 +41,18 @@ final class SimulationSettings {
     var nearPressureMultiplier: Float = 0.1
     var particleMass: Float = 2.0
 
-    var mouseStrength: Float = 20.0
-    var mouseRadius: Float = 1.2
+    var mouseStrength: Float = 200.0
+    var mouseRadius: Float = 4.0
 
-    var densityResolution: Int = 128
+    var densityResolution: Int = 64
 
-    var stepSize: Float = 0.1
+    var stepSize: Float = 0.08
     var densityMultiplier: Float = 1.0
+    var isoLevel: Float = 0.12
+    
+    var scatterR: Float = 0.15
+    var scatterG: Float = 0.45
+    var scatterB: Float = 0.9
 }
 
 struct MetalView: NSViewRepresentable {
@@ -127,83 +132,70 @@ struct MetalView: NSViewRepresentable {
     ) {}
 }
 
+func densityResolution(
+    maxResolution: Int,
+    bounds: SIMD3<Float>
+) -> SIMD3<Int> {
+    let largestDimension = max(
+        bounds.x,
+        bounds.y,
+        bounds.z
+    )
+
+    let scale = Float(maxResolution) / largestDimension
+
+    let x = max(1, Int(round(bounds.x * scale)))
+    let y = max(1, Int(round(bounds.y * scale)))
+    let z = max(1, Int(round(bounds.z * scale)))
+
+    return SIMD3<Int>(x, y, z)
+}
+
 func createParticlesInGrid(
     n: Int,
     settings: SimulationSettings,
-    spacing: Float = 0.1
+    spacing: Float
 ) -> [Particle] {
-    guard n > 0 else {
-        return []
-    }
 
-    let usableBounds = SIMD3<Float>(
-        max(settings.boundsX - settings.particleRadius * 2.0, spacing),
-        max(settings.boundsY - settings.particleRadius * 2.0, spacing),
-        max(settings.boundsZ - settings.particleRadius * 2.0, spacing)
-    )
-    let maxColumns = max(1, Int(floor(usableBounds.x / spacing)) + 1)
-    let maxRows = max(1, Int(floor(usableBounds.y / spacing)) + 1)
-    let maxLayers = max(1, Int(floor(usableBounds.z / spacing)) + 1)
-    var columns = max(1, Int(floor(usableBounds.x * 0.85 / spacing)) + 1)
-    var layers = max(1, Int(floor(usableBounds.z * 0.85 / spacing)) + 1)
-    var rows = Int(ceil(Double(n) / Double(columns * layers)))
+    let side = Int(ceil(pow(Double(n), 1.0 / 3.0)))
 
-    if rows > maxRows {
-        columns = maxColumns
-        layers = maxLayers
-        rows = Int(ceil(Double(n) / Double(columns * layers)))
-    }
+    var particles: [Particle] = []
+    particles.reserveCapacity(n)
 
-    let fittedSpacing = min(
-        spacing,
-        columns > 1 ? usableBounds.x / Float(columns - 1) : spacing,
-        rows > 1 ? usableBounds.y / Float(rows - 1) : spacing,
-        layers > 1 ? usableBounds.z / Float(layers - 1) : spacing
-    )
+    for i in 0 ..< n {
+        let xIndex = i % side
+        let zIndex = (i / side) % side
+        let yIndex = i / (side * side)
 
-    var positions: [SIMD3<Float>] = []
-    positions.reserveCapacity(n)
+        let width = Float(side - 1) * spacing
 
-    for yIndex in 0 ..< rows {
-        for zIndex in 0 ..< layers {
-            for xIndex in 0 ..< columns {
-                guard positions.count < n else {
-                    break
-                }
+        let x =
+            Float(xIndex) * spacing
+            - width * 0.5
 
-                let x =
-                    (
-                        Float(xIndex)
-                            - Float(columns - 1) * 0.5
-                    ) * fittedSpacing
+        let z =
+            Float(zIndex) * spacing
+            - width * 0.5
 
-                let y =
-                    (
-                        Float(yIndex) * fittedSpacing
-                    ) - settings.boundsY * 0.5 + settings.particleRadius
+        let y =
+            -settings.boundsY * 0.5
+            + settings.particleRadius
+            + Float(yIndex) * spacing
 
-                let z =
-                    (
-                        Float(zIndex)
-                            - Float(layers - 1) * 0.5
-                    ) * fittedSpacing
+        let position = SIMD3<Float>(x, y, z)
 
-                positions.append(
-                    SIMD3<Float>(x, y, z)
-                )
-            }
-        }
-    }
-
-    return positions.map { position in
-        Particle(
-            position: position,
-            predictedPosition: position,
-            velocity: .zero,
-            density: 0.0,
-            nearDensity: 0.0
+        particles.append(
+            Particle(
+                position: position,
+                predictedPosition: position,
+                velocity: .zero,
+                density: 0,
+                nearDensity: 0
+            )
         )
     }
+
+    return particles
 }
 
 func scatterParticlesRandomly(
@@ -428,6 +420,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var mouseInteractionState: MouseInteractionState = .init()
 
     private var camera: Camera
+    
+    private let renderScale: CGFloat = 0.5
 
     init(settings: SimulationSettings) {
         self.settings = settings
@@ -517,6 +511,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             settings.boundsZ
         )
 
+        let densityRes = densityResolution(maxResolution: settings.densityResolution, bounds: SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ))
         self.densityTexture = createDensityTexture(device: device, width: settings.densityResolution, height: settings.densityResolution, depth: settings.densityResolution)
         self.renderResult = createFinalRenderTexture(device: device, width: 1, height: 1)
 
@@ -545,10 +540,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         view: MTKView
     ) {
         let width =
-            max(1, Int(view.drawableSize.width))
+            max(1, Int(view.drawableSize.width * renderScale))
 
         let height =
-            max(1, Int(view.drawableSize.height))
+            max(1, Int(view.drawableSize.height * renderScale))
 
         guard
             renderResult.width != width ||
@@ -589,6 +584,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         uniforms.stepSize = settings.stepSize
         uniforms.densityMultiplier = settings.densityMultiplier
+        uniforms.isoLevel = settings.isoLevel
+        
+        uniforms.scatterR = settings.scatterR
+        uniforms.scatterG = settings.scatterG
+        uniforms.scatterB = settings.scatterB
 
         let aspectRatio =
             max(
@@ -646,12 +646,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 || lastGenerationBounds != generationBounds
 
             if shouldRegenerateParticles {
-                let newParticles = createParticles(n: requestedParticleCount, wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing)
-                particles.assign(new: newParticles)
-                nextParticles.assign(new: newParticles)
-
-                lookupEntries.assign(new: createLookupEntries(particleCount: requestedParticleCount))
-                cellStartIndices.assign(new: createCellStartIndices(particleCount: requestedParticleCount))
+                regenerateParticles()
             }
 
             lastRandomScattering = settings.randomScattering
@@ -666,11 +661,20 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private func updateDensityTextureSize() {
+        let resolution = max(settings.densityResolution, 1)
+
+        guard densityTexture.width != resolution ||
+              densityTexture.height != resolution ||
+              densityTexture.depth != resolution
+        else {
+            return
+        }
+
         densityTexture = createDensityTexture(
             device: device,
-            width: settings.densityResolution,
-            height: settings.densityResolution,
-            depth: settings.densityResolution,
+            width: resolution,
+            height: resolution,
+            depth: resolution
         )
     }
 
@@ -934,8 +938,6 @@ final class Renderer: NSObject, MTKViewDelegate {
             index: 0
         )
 
-        let width = densityRenderPipeline.threadExecutionWidth
-
         let maxThreads = densityRenderPipeline.maxTotalThreadsPerThreadgroup
 
         let threadWidth = 8
@@ -1038,24 +1040,19 @@ final class Renderer: NSObject, MTKViewDelegate {
             return
         }
 
-        if settings.paused {
-            encodePrediction(commandBuffer)
-            encodeLookupUpdate(commandBuffer)
-            encodeLookupSort(commandBuffer)
-            encodeCellStartIndices(commandBuffer)
-        } else {
+        if !settings.paused {
             for _ in 0 ..< simulationSubsteps {
                 encodePrediction(commandBuffer)
                 encodeLookupUpdate(commandBuffer)
                 encodeLookupSort(commandBuffer)
                 encodeCellStartIndices(commandBuffer)
                 encodeDensityCalculation(commandBuffer)
-                encodeDensityPass(commandBuffer)
                 encodeSimulation(commandBuffer)
             }
         }
-        
+
         encodeDensityPass(commandBuffer)
+
         encodeFinalRender(commandBuffer)
         encodeRendering(commandBuffer, descriptor: descriptor)
 
@@ -1258,6 +1255,43 @@ final class Renderer: NSObject, MTKViewDelegate {
         camera.setMoving(
             direction,
             active: active
+        )
+    }
+    
+    @MainActor
+    func resetSimulation() {
+        regenerateParticles()
+        mouseInteractionState = .init()
+    }
+    
+    private func regenerateParticles() {
+        let particleCount = max(1, settings.particles)
+
+        let newParticles = createParticles(
+            n: particleCount,
+            wantsRandom: settings.randomScattering,
+            settings: settings,
+            spacing: settings.particleSpacing
+        )
+
+        particles.assign(new: newParticles)
+        nextParticles.assign(new: newParticles)
+
+        lookupEntries.assign(
+            new: createLookupEntries(particleCount: particleCount)
+        )
+
+        cellStartIndices.assign(
+            new: createCellStartIndices(particleCount: particleCount)
+        )
+
+        lastRandomScattering = settings.randomScattering
+        lastParticleSpacing = settings.particleSpacing
+        lastParticleRadius = settings.particleRadius
+        lastGenerationBounds = SIMD3(
+            settings.boundsX,
+            settings.boundsY,
+            settings.boundsZ
         )
     }
 }

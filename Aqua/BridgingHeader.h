@@ -49,6 +49,11 @@ struct Uniforms {
     
     float stepSize;
     float densityMultiplier;
+    float isoLevel;
+    
+    float scatterR;
+    float scatterG;
+    float scatterB;
     
     simd_float4x4 viewMatrix;
     simd_float4x4 projectionMatrix;
