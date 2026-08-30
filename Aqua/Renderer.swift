@@ -29,7 +29,7 @@ final class SimulationSettings {
     var boundsZ: Float = 10.0 // m
     var boundaryViewportPadding: Float = 10.0
 
-    var particles: Int = 10000
+    var particles: Int = 7000
     var particleSpacing: Float = 0.275
     var randomScattering: Bool = false
 
@@ -44,17 +44,36 @@ final class SimulationSettings {
     var mouseStrength: Float = 200.0
     var mouseRadius: Float = 4.0
 
-    var densityResolution: Int = 64
+    var densityResolution: Int = 80
 
-    var stepSize: Float = 0.08
-    var densityMultiplier: Float = 1.0
-    var isoLevel: Float = 0.12
+    var stepSize: Float = 0.045
+    var densityMultiplier: Float = 1.35
+    var isoLevel: Float = 0.1
     
-    var scatterR: Float = 0.15
-    var scatterG: Float = 0.8
-    var scatterB: Float = 2.0
+    var scatterR: Float = 1.8
+    var scatterG: Float = 0.55
+    var scatterB: Float = 0.12
     
-    var brightnessMultiplier: Float = 1.0
+    var brightnessMultiplier: Float = 1.15
+    var waterIOR: Float = 1.333
+    var surfaceRoughness: Float = 0.035
+
+    var showBounds = false
+
+    var colliderEnabled = true
+    var colliderCollisions = true
+    var colliderFloating = true
+    var colliderX: Float = 1.8
+    var colliderY: Float = -1.0
+    var colliderZ: Float = 0.0
+    var colliderSizeX: Float = 2.2
+    var colliderSizeY: Float = 1.2
+    var colliderSizeZ: Float = 2.2
+
+    var foamEnabled = true
+    var foamThreshold: Float = 0.42
+    var foamIntensity: Float = 1.35
+    var foamScale: Float = 1.1
 }
 
 struct MetalView: NSViewRepresentable {
@@ -283,7 +302,7 @@ func createDensityTexture(device: MTLDevice, width: Int, height: Int, depth: Int
     let descriptor = MTLTextureDescriptor()
 
     descriptor.textureType = .type3D
-    descriptor.pixelFormat = .r16Float
+    descriptor.pixelFormat = .rgba16Float
 
     descriptor.width = max(width, 1)
     descriptor.height = max(height, 1)
@@ -410,7 +429,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var cellStartIndices: MTLSyncBuffer<UInt32>
 
     private var uniforms: Uniforms = .init()
-    private let simulationSubsteps = 2
+    private let simulationSubsteps = 1
 
     private var lastFrameTime: CFTimeInterval?
 
@@ -418,12 +437,15 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastParticleSpacing: Float = .nan
     private var lastParticleRadius: Float = .nan
     private var lastGenerationBounds: SIMD3<Float> = .zero
+    private var lastDensityConfiguration: [Float] = []
+    private var densityVolumeDirty = true
+    private var frameIndex: UInt64 = 0
 
     private var mouseInteractionState: MouseInteractionState = .init()
 
     private var camera: Camera
     
-    private let renderScale: CGFloat = 0.5
+    private let renderScale: CGFloat = 0.7
 
     init(settings: SimulationSettings) {
         self.settings = settings
@@ -513,8 +535,16 @@ final class Renderer: NSObject, MTKViewDelegate {
             settings.boundsZ
         )
 
-        let densityRes = densityResolution(maxResolution: settings.densityResolution, bounds: SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ))
-        self.densityTexture = createDensityTexture(device: device, width: settings.densityResolution, height: settings.densityResolution, depth: settings.densityResolution)
+        let initialDensityResolution = densityResolution(
+            maxResolution: settings.densityResolution,
+            bounds: SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ)
+        )
+        self.densityTexture = createDensityTexture(
+            device: device,
+            width: initialDensityResolution.x,
+            height: initialDensityResolution.y,
+            depth: initialDensityResolution.z
+        )
         self.renderResult = createFinalRenderTexture(device: device, width: 1, height: 1)
 
         let initialCameraDistance =
@@ -592,6 +622,29 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.scatterG = settings.scatterG
         uniforms.scatterB = settings.scatterB
         uniforms.brightnessMultiplier = settings.brightnessMultiplier
+        uniforms.waterIOR = max(settings.waterIOR, 1.0001)
+        uniforms.surfaceRoughness = max(settings.surfaceRoughness, 0.0)
+        uniforms.foamEnabled = settings.foamEnabled ? 1 : 0
+        uniforms.foamThreshold = max(settings.foamThreshold, 0.0)
+        uniforms.foamIntensity = max(settings.foamIntensity, 0.0)
+        uniforms.foamScale = max(settings.foamScale, 0.01)
+
+        uniforms.colliderEnabled = settings.colliderEnabled ? 1 : 0
+        uniforms.colliderCollisions = settings.colliderCollisions ? 1 : 0
+        uniforms.colliderFloating = settings.colliderFloating ? 1 : 0
+        let floatingOffset = settings.colliderFloating
+            ? sin(uniforms.time * 1.35) * 0.16
+            : 0.0
+        uniforms.colliderPosition = SIMD3<Float>(
+            settings.colliderX,
+            settings.colliderY + floatingOffset,
+            settings.colliderZ
+        )
+        uniforms.colliderSize = SIMD3<Float>(
+            max(settings.colliderSizeX, 0.05),
+            max(settings.colliderSizeY, 0.05),
+            max(settings.colliderSizeZ, 0.05)
+        )
 
         let aspectRatio =
             max(
@@ -661,23 +714,40 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.particleCount = UInt32(particles.count)
         uniforms.spatialEntryCount = UInt32(lookupEntries.count)
         uniforms.particleMass = max(settings.particleMass, 0.0001)
+
+        let densityConfiguration = [
+            settings.smoothingRadius,
+            settings.targetDensity,
+            settings.particleMass,
+            settings.boundsX,
+            settings.boundsY,
+            settings.boundsZ,
+            Float(settings.densityResolution)
+        ]
+        if densityConfiguration != lastDensityConfiguration {
+            densityVolumeDirty = true
+            lastDensityConfiguration = densityConfiguration
+        }
     }
 
     private func updateDensityTextureSize() {
-        let resolution = max(settings.densityResolution, 1)
+        let resolution = densityResolution(
+            maxResolution: max(settings.densityResolution, 1),
+            bounds: SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ)
+        )
 
-        guard densityTexture.width != resolution ||
-              densityTexture.height != resolution ||
-              densityTexture.depth != resolution
+        guard densityTexture.width != resolution.x ||
+              densityTexture.height != resolution.y ||
+              densityTexture.depth != resolution.z
         else {
             return
         }
 
         densityTexture = createDensityTexture(
             device: device,
-            width: resolution,
-            height: resolution,
-            depth: resolution
+            width: resolution.x,
+            height: resolution.y,
+            depth: resolution.z
         )
     }
 
@@ -1007,13 +1077,12 @@ final class Renderer: NSObject, MTKViewDelegate {
 //
 //        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: particles.count)
 
-        // Bounds
-        encoder.setRenderPipelineState(boundsPipeline)
-
-        bounds.setAtVertexBuffer(encoder, index: 0)
-        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
-
-        encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: bounds.count)
+        if settings.showBounds {
+            encoder.setRenderPipelineState(boundsPipeline)
+            bounds.setAtVertexBuffer(encoder, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: bounds.count)
+        }
 
         encoder.endEncoding()
     }
@@ -1034,6 +1103,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         let dt = calculateDeltaTime()
 
+        uniforms.time += min(dt, 1.0 / 15.0)
+        frameIndex &+= 1
+
         updateUniforms(
             view: view,
             dt: dt
@@ -1048,15 +1120,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         if settings.paused {
-            encodePrediction(commandBuffer)
-
-            encodeLookupUpdate(commandBuffer)
-            encodeLookupSort(commandBuffer)
-            encodeCellStartIndices(commandBuffer)
-
-            encodeDensityCalculation(commandBuffer)
-        }
-        else {
+            if densityVolumeDirty {
+                encodePrediction(commandBuffer)
+                encodeLookupUpdate(commandBuffer)
+                encodeLookupSort(commandBuffer)
+                encodeCellStartIndices(commandBuffer)
+                encodeDensityCalculation(commandBuffer)
+                encodeDensityPass(commandBuffer)
+                densityVolumeDirty = false
+            }
+        } else {
             for _ in 0 ..< simulationSubsteps {
                 encodePrediction(commandBuffer)
 
@@ -1068,9 +1141,12 @@ final class Renderer: NSObject, MTKViewDelegate {
 
                 encodeSimulation(commandBuffer)
             }
+            if frameIndex.isMultiple(of: 2) || densityVolumeDirty {
+                encodeDensityPass(commandBuffer)
+                densityVolumeDirty = false
+            }
         }
-        
-        encodeDensityPass(commandBuffer)
+
         encodeFinalRender(commandBuffer)
 
         encodeRendering(
@@ -1315,5 +1391,6 @@ final class Renderer: NSObject, MTKViewDelegate {
             settings.boundsY,
             settings.boundsZ
         )
+        densityVolumeDirty = true
     }
 }

@@ -55,6 +55,19 @@ struct Uniforms {
     float scatterG;
     float scatterB;
     float brightnessMultiplier;
+
+    float waterIOR;
+    float surfaceRoughness;
+    unsigned int foamEnabled;
+    float foamThreshold;
+    float foamIntensity;
+    float foamScale;
+
+    unsigned int colliderEnabled;
+    unsigned int colliderCollisions;
+    unsigned int colliderFloating;
+    simd_float3 colliderPosition;
+    simd_float3 colliderSize;
     
     simd_float4x4 viewMatrix;
     simd_float4x4 projectionMatrix;

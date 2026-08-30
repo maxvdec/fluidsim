@@ -227,6 +227,7 @@ struct ParametersView: View {
                 FloatField("Bounds X", value: $settings.boundsX, unit: "m")
                 FloatField("Bounds Y", value: $settings.boundsY, unit: "m")
                 FloatField("Bounds Z", value: $settings.boundsZ, unit: "m")
+                Toggle("Show Bounding Box", isOn: $settings.showBounds)
                 VStack(alignment: .leading) {
                     Text("Boundary Viewport Padding")
                     HStack {
@@ -281,10 +282,33 @@ struct ParametersView: View {
                 }
                 
                 Divider()
-                FloatField("Scatter R", value: $settings.scatterR, unit: "")
-                FloatField("Scatter G", value: $settings.scatterB, unit: "")
-                FloatField("Scatter B", value: $settings.scatterG, unit: "")
+                FloatField("Absorption R", value: $settings.scatterR, unit: "")
+                FloatField("Absorption G", value: $settings.scatterG, unit: "")
+                FloatField("Absorption B", value: $settings.scatterB, unit: "")
                 FloatField("Brightness multiplier", value: $settings.brightnessMultiplier, unit: "")
+                FloatField("Water IOR", value: $settings.waterIOR, unit: "")
+                FloatField("Surface Roughness", value: $settings.surfaceRoughness, unit: "")
+
+                Divider()
+                Toggle("Foam", isOn: $settings.foamEnabled)
+                if settings.foamEnabled {
+                    FloatField("Foam Threshold", value: $settings.foamThreshold, unit: "")
+                    FloatField("Foam Intensity", value: $settings.foamIntensity, unit: "")
+                    FloatField("Foam Scale", value: $settings.foamScale, unit: "")
+                }
+
+                Divider()
+                Toggle("Obstacle Cube", isOn: $settings.colliderEnabled)
+                if settings.colliderEnabled {
+                    Toggle("Fluid Collisions", isOn: $settings.colliderCollisions)
+                    Toggle("Floating Motion", isOn: $settings.colliderFloating)
+                    FloatField("Cube X", value: $settings.colliderX, unit: "m", isZeroPermitted: true)
+                    FloatField("Cube Y", value: $settings.colliderY, unit: "m", isZeroPermitted: true)
+                    FloatField("Cube Z", value: $settings.colliderZ, unit: "m", isZeroPermitted: true)
+                    FloatField("Cube Size X", value: $settings.colliderSizeX, unit: "m")
+                    FloatField("Cube Size Y", value: $settings.colliderSizeY, unit: "m")
+                    FloatField("Cube Size Z", value: $settings.colliderSizeZ, unit: "m")
+                }
                 
                 Spacer()
                 HStack {
