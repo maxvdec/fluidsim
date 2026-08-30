@@ -284,6 +284,7 @@ struct ParametersView: View {
                 FloatField("Scatter R", value: $settings.scatterR, unit: "")
                 FloatField("Scatter G", value: $settings.scatterB, unit: "")
                 FloatField("Scatter B", value: $settings.scatterG, unit: "")
+                FloatField("Brightness multiplier", value: $settings.brightnessMultiplier, unit: "")
                 
                 Spacer()
                 HStack {

@@ -51,8 +51,10 @@ final class SimulationSettings {
     var isoLevel: Float = 0.12
     
     var scatterR: Float = 0.15
-    var scatterG: Float = 0.45
-    var scatterB: Float = 0.9
+    var scatterG: Float = 0.8
+    var scatterB: Float = 2.0
+    
+    var brightnessMultiplier: Float = 1.0
 }
 
 struct MetalView: NSViewRepresentable {
@@ -589,6 +591,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.scatterR = settings.scatterR
         uniforms.scatterG = settings.scatterG
         uniforms.scatterB = settings.scatterB
+        uniforms.brightnessMultiplier = settings.brightnessMultiplier
 
         let aspectRatio =
             max(
@@ -1031,30 +1034,49 @@ final class Renderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         let dt = calculateDeltaTime()
 
-        updateUniforms(view: view, dt: dt)
+        updateUniforms(
+            view: view,
+            dt: dt
+        )
 
-        guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let descriptor = view.currentRenderPassDescriptor,
-              let drawable = view.currentDrawable
+        guard
+            let commandBuffer = commandQueue.makeCommandBuffer(),
+            let descriptor = view.currentRenderPassDescriptor,
+            let drawable = view.currentDrawable
         else {
             return
         }
 
-        if !settings.paused {
+        if settings.paused {
+            encodePrediction(commandBuffer)
+
+            encodeLookupUpdate(commandBuffer)
+            encodeLookupSort(commandBuffer)
+            encodeCellStartIndices(commandBuffer)
+
+            encodeDensityCalculation(commandBuffer)
+        }
+        else {
             for _ in 0 ..< simulationSubsteps {
                 encodePrediction(commandBuffer)
+
                 encodeLookupUpdate(commandBuffer)
                 encodeLookupSort(commandBuffer)
                 encodeCellStartIndices(commandBuffer)
+
                 encodeDensityCalculation(commandBuffer)
+
                 encodeSimulation(commandBuffer)
             }
         }
-
+        
         encodeDensityPass(commandBuffer)
-
         encodeFinalRender(commandBuffer)
-        encodeRendering(commandBuffer, descriptor: descriptor)
+
+        encodeRendering(
+            commandBuffer,
+            descriptor: descriptor
+        )
 
         commandBuffer.present(drawable)
         commandBuffer.commit()

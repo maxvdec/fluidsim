@@ -54,6 +54,7 @@ struct Uniforms {
     float scatterR;
     float scatterG;
     float scatterB;
+    float brightnessMultiplier;
     
     simd_float4x4 viewMatrix;
     simd_float4x4 projectionMatrix;
