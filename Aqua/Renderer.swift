@@ -26,6 +26,7 @@ final class SimulationSettings {
     
     var boundsX: Float = 40.0 // m
     var boundsY: Float = 20.0 // m
+    var boundsZ: Float = 20.0 // m
     var boundaryViewportPadding: Float = 10.0
     
     var particles: Int = 10000
@@ -46,91 +47,184 @@ final class SimulationSettings {
 
 struct MetalView: NSViewRepresentable {
     let renderer: Renderer
-    
-    func makeNSView(context: Context) -> SimulationMTKView {
+
+    func makeNSView(
+        context: Context
+    ) -> SimulationMTKView {
         let view = SimulationMTKView()
-        
+
         view.device = renderer.device
         view.delegate = renderer
+
         view.colorPixelFormat = .bgra8Unorm
-        view.clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
+
+        view.clearColor = MTLClearColor(
+            red: 0,
+            green: 0,
+            blue: 0,
+            alpha: 1
+        )
+
         view.sampleCount = 4
         
+        view.depthStencilPixelFormat = .depth32Float
+        view.clearDepth = 1.0
+
         view.preferredFramesPerSecond = 60
         view.enableSetNeedsDisplay = false
         view.isPaused = false
-        
+
         view.onLeftMouseDown = { point in
-            renderer.beginMouseInteraction(at: point, in: view, mode: .repel)
+            renderer.beginMouseInteraction(
+                at: point,
+                in: view,
+                mode: .repel
+            )
         }
-        
+
         view.onLeftMouseDragged = { point in
-            renderer.updateMouseInteraction(at: point, in: view)
+            renderer.updateMouseInteraction(
+                at: point,
+                in: view
+            )
         }
-        
+
         view.onLeftMouseUp = {
             renderer.endMouseInteraction()
         }
-        
-        view.onRightMouseDown = { point in
-            renderer.beginMouseInteraction(at: point, in: view, mode: .grab)
+
+        view.onCameraRotate = { dx, dy in
+            renderer.rotateCamera(
+                deltaX: dx,
+                deltaY: dy
+            )
         }
-        
-        view.onRightMouseDragged = { point in
-            renderer.updateMouseInteraction(at: point, in: view)
+
+        view.onCameraZoom = { delta in
+            renderer.zoomCamera(
+                delta: delta
+            )
         }
-        
-        view.onRightMouseUp = {
-            renderer.endMouseInteraction()
+
+        view.onCameraMoveChanged = { direction, active in
+            renderer.setCameraMovement(
+                direction,
+                active: active
+            )
         }
-        
+
         return view
     }
-    
-    func updateNSView(_ nsView: SimulationMTKView, context: Context) {}
+
+    func updateNSView(
+        _ nsView: SimulationMTKView,
+        context: Context
+    ) {}
 }
 
-func createParticlesInGrid(n: Int, settings: SimulationSettings, spacing: Float = 0.1) -> [Particle] {
-    let aspectRatio = max(0.0001, Double(settings.boundsX / settings.boundsY))
-    let columns = min(n, max(1, Int(round(sqrt(Double(n) * aspectRatio)))))
-    let rows = Int(ceil(Double(n) / Double(columns)))
-    
-    var positions: [SIMD2<Float>] = []
-    positions.reserveCapacity(n)
-    
-    for yIndex in 0 ..< rows {
-        let firstIndex = yIndex * columns
-        let rowCount = min(columns, n - firstIndex)
-        let rowOffset = (columns - rowCount) / 2
-        let y = (Float(yIndex) - Float(rows - 1) / 2.0) * spacing
+func createParticlesInGrid(
+    n: Int,
+    settings: SimulationSettings,
+    spacing: Float = 0.1
+) -> [Particle] {
+    guard n > 0 else {
+        return []
+    }
 
-        for xIndex in 0 ..< rowCount {
-            let gridX = rowOffset + xIndex
-            let x = (Float(gridX) - Float(columns - 1) / 2.0) * spacing
-            positions.append(SIMD2<Float>(x, y))
+    let side = max(
+        1,
+        Int(ceil(pow(Double(n), 1.0 / 3.0)))
+    )
+
+    var positions: [SIMD3<Float>] = []
+    positions.reserveCapacity(n)
+
+    for zIndex in 0 ..< side {
+        for yIndex in 0 ..< side {
+            for xIndex in 0 ..< side {
+                guard positions.count < n else {
+                    break
+                }
+
+                let x =
+                    (
+                        Float(xIndex)
+                        - Float(side - 1) * 0.5
+                    ) * spacing
+
+                let y =
+                    (
+                        Float(yIndex)
+                        - Float(side - 1) * 0.5
+                    ) * spacing
+
+                let z =
+                    (
+                        Float(zIndex)
+                        - Float(side - 1) * 0.5
+                    ) * spacing
+
+                positions.append(
+                    SIMD3<Float>(x, y, z)
+                )
+            }
         }
     }
-    
-    return positions.map { pos in
-        Particle(position: pos, predictedPosition: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0, nearDensity: 0.0)
+
+    return positions.map { position in
+        Particle(
+            position: position,
+            predictedPosition: position,
+            velocity: .zero,
+            density: 0.0,
+            nearDensity: 0.0
+        )
     }
 }
 
-func scatterParticlesRandomly(n: Int, settings: SimulationSettings) -> [Particle] {
-    let boundsHalf = ((settings.boundsX / 2) - settings.particleRadius, (settings.boundsY / 2) - settings.particleRadius)
-    
-    var positions: [SIMD2<Float>] = []
+func scatterParticlesRandomly(
+    n: Int,
+    settings: SimulationSettings
+) -> [Particle] {
+    let halfBounds = SIMD3<Float>(
+        settings.boundsX * 0.5 - settings.particleRadius,
+        settings.boundsY * 0.5 - settings.particleRadius,
+        settings.boundsZ * 0.5 - settings.particleRadius
+    )
+
+    var positions: [SIMD3<Float>] = []
     positions.reserveCapacity(n)
-    
+
     for _ in 0 ..< n {
-        let randX = Float.random(in: -boundsHalf.0...boundsHalf.0)
-        let randY = Float.random(in: -boundsHalf.1...boundsHalf.1)
-        
-        positions.append(SIMD2<Float>(randX, randY))
+        let x = Float.random(
+            in: -halfBounds.x ... halfBounds.x
+        )
+
+        let y = Float.random(
+            in: -halfBounds.y ... halfBounds.y
+        )
+
+        let z = Float.random(
+            in: -halfBounds.z ... halfBounds.z
+        )
+
+        positions.append(
+            SIMD3<Float>(
+                x,
+                y,
+                z
+            )
+        )
     }
-    
-    return positions.map { pos in
-        Particle(position: pos, predictedPosition: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0, nearDensity: 0.0)
+
+    return positions.map { position in
+        Particle(
+            position: position,
+            predictedPosition: position,
+            velocity: SIMD3<Float>.zero,
+            density: 0.0,
+            nearDensity: 0.0
+        )
     }
 }
 
@@ -154,6 +248,7 @@ func createRenderPipeline(vertex: String, fragment: String, device: MTLDevice) t
     descriptor.vertexFunction = vertexFunction
     descriptor.fragmentFunction = fragmentFunction
     descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+    descriptor.depthAttachmentPixelFormat = .depth32Float
     descriptor.rasterSampleCount = 4
     
     return try device.makeRenderPipelineState(descriptor: descriptor)
@@ -170,24 +265,37 @@ func createDensityTexture(device: MTLDevice, width: Int, height: Int) -> MTLText
     return device.makeTexture(descriptor: descriptor)!
 }
 
-func createBounds(settings: SimulationSettings) -> [SIMD2<Float>] {
-    let w = settings.boundsX
-    let h = settings.boundsY
-    
-    let vertices: [(Float, Float)] = [
-        (-w / 2, -h / 2),
-        (w / 2, -h / 2),
-        (w / 2, -h / 2),
-        (w / 2, h / 2),
-        (w / 2, h / 2),
-        (-w / 2, h / 2),
-        (-w / 2, h / 2),
-        (-w / 2, -h / 2)
+func createBounds(settings: SimulationSettings) -> [SIMD3<Float>] {
+    let hx = settings.boundsX * 0.5
+    let hy = settings.boundsY * 0.5
+    let hz = settings.boundsZ * 0.5
+
+    let lbf = SIMD3<Float>(-hx, -hy,  hz)
+    let rbf = SIMD3<Float>( hx, -hy,  hz)
+    let ltf = SIMD3<Float>(-hx,  hy,  hz)
+    let rtf = SIMD3<Float>( hx,  hy,  hz)
+
+    let lbb = SIMD3<Float>(-hx, -hy, -hz)
+    let rbb = SIMD3<Float>( hx, -hy, -hz)
+    let ltb = SIMD3<Float>(-hx,  hy, -hz)
+    let rtb = SIMD3<Float>( hx,  hy, -hz)
+
+    return [
+        lbf, rbf,
+        rbf, rtf,
+        rtf, ltf,
+        ltf, lbf,
+
+        lbb, rbb,
+        rbb, rtb,
+        rtb, ltb,
+        ltb, lbb,
+
+        lbf, lbb,
+        rbf, rbb,
+        rtf, rtb,
+        ltf, ltb
     ]
-    
-    let verticesSIMD = vertices.map { t in SIMD2(t.0, t.1) }
-    
-    return verticesSIMD
 }
 
 func spatialEntryCount(for particleCount: Int) -> Int {
@@ -228,11 +336,13 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let boundsPipeline: MTLRenderPipelineState
     private let densityDisplayPipeline: MTLRenderPipelineState
     
+    private let depthStencilState: MTLDepthStencilState
+    
     private var densityTexture: MTLTexture
     
     var particles: MTLSyncBuffer<Particle>
     private var nextParticles: MTLSyncBuffer<Particle>
-    var bounds: MTLSyncBuffer<SIMD2<Float>>
+    var bounds: MTLSyncBuffer<SIMD3<Float>>
     var lookupEntries: MTLSyncBuffer<SpatialLookupEntry>
     private var cellStartIndices: MTLSyncBuffer<UInt32>
     
@@ -244,6 +354,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastRandomScattering: Bool = false
     
     private var mouseInteractionState: MouseInteractionState = .init()
+    
+    private var camera: Camera
     
     init(settings: SimulationSettings) {
         self.settings = settings
@@ -295,6 +407,25 @@ final class Renderer: NSObject, MTKViewDelegate {
             fragment: "densityFragment",
             device: device
         )
+        
+        let depthDescriptor =
+            MTLDepthStencilDescriptor()
+
+        depthDescriptor.depthCompareFunction = .less
+        depthDescriptor.isDepthWriteEnabled = true
+
+        guard let depthState =
+            device.makeDepthStencilState(
+                descriptor: depthDescriptor
+            )
+        else {
+            fatalError(
+                "Could not create depth stencil state"
+            )
+        }
+
+        self.depthStencilState = depthState
+        
         let initialParticles = createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing)
         self.particles = MTLSyncBuffer(device: device, values: initialParticles)
         self.nextParticles = MTLSyncBuffer(device: device, values: initialParticles)
@@ -306,10 +437,23 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         self.densityTexture = createDensityTexture(device: device, width: 1, height: 1)
         
+        let initialCameraDistance =
+            max(
+                settings.boundsX,
+                settings.boundsY,
+                settings.boundsZ
+            ) * 1.3
+
+        self.camera = Camera(
+            target: .zero,
+            distance: initialCameraDistance
+        )
+        
         super.init()
     }
     
     private func updateUniforms(view: MTKView, dt: Float) {
+        camera.update(dt: dt)
         uniforms.dt = settings.paused
             ? 0.0
             : min(dt, 1.0 / 30.0) * settings.timeScale / Float(simulationSubsteps)
@@ -325,8 +469,32 @@ final class Renderer: NSObject, MTKViewDelegate {
         let boundaryViewportScale = max(0.01, 1.0 - settings.boundaryViewportPadding / 50.0)
         uniforms.ppm = min(uniforms.viewportSize.x / settings.boundsX, uniforms.viewportSize.y / settings.boundsY) * boundaryViewportScale
         updateDensityTextureSize()
-        uniforms.bounds = SIMD2<Float>(settings.boundsX, settings.boundsY)
+        uniforms.bounds = SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ)
         uniforms.smoothingRadius = settings.smoothingRadius
+        
+        let aspectRatio =
+            max(
+                uniforms.viewportSize.x /
+                    max(uniforms.viewportSize.y, 1),
+                0.0001
+            )
+
+        let viewMatrix =
+            camera.viewMatrix()
+
+        let projectionMatrix =
+            camera.projectionMatrix(
+                aspectRatio: aspectRatio
+            )
+
+        uniforms.viewMatrix =
+            viewMatrix
+
+        uniforms.projectionMatrix =
+            projectionMatrix
+
+        uniforms.viewProjectionMatrix =
+            projectionMatrix * viewMatrix
         
         uniforms.targetDensity = settings.targetDensity
         uniforms.pressureMultiplier = settings.pressureMultiplier
@@ -380,6 +548,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             height: height
         )
     }
+
     private func encodePrediction(_ commandBuffer: MTLCommandBuffer) {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             return
@@ -601,6 +770,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             return
         }
         
+        encoder.setDepthStencilState(depthStencilState)
+        
 //        encoder.setRenderPipelineState(
 //            densityDisplayPipeline
 //        )
@@ -698,45 +869,13 @@ final class Renderer: NSObject, MTKViewDelegate {
     
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
     
-    func screenToSimulation(
-        point: CGPoint,
-        in view: MTKView
-    ) -> SIMD2<Float> {
-        guard view.bounds.width > 0, view.bounds.height > 0 else {
-            return .zero
-        }
-
-        let normalizedX = Float((point.x - view.bounds.minX) / view.bounds.width)
-        let normalizedY = view.isFlipped
-            ? Float((view.bounds.maxY - point.y) / view.bounds.height)
-            : Float((point.y - view.bounds.minY) / view.bounds.height)
-        let viewportSize = SIMD2<Float>(
-            Float(view.drawableSize.width),
-            Float(view.drawableSize.height)
-        )
-        let pixelPosition = SIMD2<Float>(
-            normalizedX * viewportSize.x,
-            normalizedY * viewportSize.y
-        )
-        let boundaryViewportScale = max(0.01, 1.0 - settings.boundaryViewportPadding / 50.0)
-        let ppm = min(viewportSize.x / settings.boundsX, viewportSize.y / settings.boundsY) * boundaryViewportScale
-
-        return (pixelPosition - viewportSize * 0.5) / ppm
-    }
-    
     func beginMouseInteraction(at point: CGPoint, in view: MTKView, mode: MouseMode) {
-        let simPos = screenToSimulation(point: point, in: view)
-        
         mouseInteractionState.isActive = true
         mouseInteractionState.mode = mode
-        mouseInteractionState.currentSimPosition = simPos
-        mouseInteractionState.previousSimPosition = simPos
         mouseInteractionState.simVelocity = .zero
     }
     
     func updateMouseInteraction(at point: CGPoint, in view: MTKView) {
-        let simPos = screenToSimulation(point: point, in: view)
-        mouseInteractionState.currentSimPosition = simPos
     }
     
     func endMouseInteraction() {
@@ -763,5 +902,31 @@ final class Renderer: NSObject, MTKViewDelegate {
         
         mouseInteractionState.simVelocity = clampedVelocity
         mouseInteractionState.previousSimPosition = mouseInteractionState.currentSimPosition
+    }
+    
+    func rotateCamera(
+        deltaX: Float,
+        deltaY: Float
+    ) {
+        camera.orbit(
+            deltaX: deltaX,
+            deltaY: deltaY
+        )
+    }
+
+    func zoomCamera(
+        delta: Float
+    ) {
+        camera.zoom(delta: delta)
+    }
+
+    func setCameraMovement(
+        _ direction: CameraMoveDirection,
+        active: Bool
+    ) {
+        camera.setMoving(
+            direction,
+            active: active
+        )
     }
 }

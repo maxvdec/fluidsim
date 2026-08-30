@@ -14,17 +14,17 @@ float2 calculateDensitiesAtPosition(
     device const Particle *particles,
     device const SpatialLookupEntry *lookupEntries,
     device const uint *cellStartIndices,
-    float2 samplePos,
+    float3 samplePos,
     constant Uniforms& uniforms
 ) {
     float density = 0.0;
     float nearDensity = 0.0;
 
-    int2 sampleCell = getCell2D(samplePos, uniforms.smoothingRadius);
+    int3 sampleCell = getCell3D(samplePos, uniforms.smoothingRadius);
 
-    for (uint offsetIndex = 0; offsetIndex < 9; offsetIndex++) {
-        int2 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
-        uint key = keyFromHash(hashCell2D(cell), uniforms.particleCount);
+    for (uint offsetIndex = 0; offsetIndex < 27; offsetIndex++) {
+        int3 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
+        uint key = keyFromHash(hashCell3D(cell), uniforms.particleCount);
         uint entryIndex = cellStartIndices[key];
 
         if (entryIndex == 0xffffffffu) {
@@ -35,14 +35,15 @@ float2 calculateDensitiesAtPosition(
             uint particleIndex = lookupEntries[entryIndex].particleIndex;
             Particle p = particles[particleIndex];
 
-            if (all(getCell2D(p.predictedPosition, uniforms.smoothingRadius) == cell)) {
+            if (all(getCell3D(p.predictedPosition, uniforms.smoothingRadius) == cell)) {
                 float dst = length(p.predictedPosition - samplePos);
                 density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, dst);
                 nearDensity += uniforms.particleMass * nearDensityKernel(uniforms.smoothingRadius, dst);
 
-                for (uint ghostIndex = 0; ghostIndex < 8; ghostIndex++) {
-                    if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, ghostIndex)) {
-                        float2 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, ghostIndex);
+                for (uint ghostIndex = 0; ghostIndex < 26; ghostIndex++) {
+                    int3 direction = getBoundaryGhostDirection(ghostIndex);
+                    if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, direction)) {
+                        float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, ghostIndex);
                         float ghostDst = length(ghostPosition - samplePos);
                         density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, ghostDst);
                         nearDensity += uniforms.particleMass * nearDensityKernel(uniforms.smoothingRadius, ghostDst);
@@ -57,22 +58,22 @@ float2 calculateDensitiesAtPosition(
     return float2(density, nearDensity);
 }
 
-float2 calculatePressureForce(
+float3 calculatePressureForce(
     device const Particle *particles,
     device const SpatialLookupEntry *lookupEntries,
     device const uint *cellStartIndices,
-    float2 samplePos,
+    float3 samplePos,
     float sampleDensity,
     float sampleNearDensity,
     constant Uniforms& uniforms
 ) {
-    float2 pressureForce = float2(0.0, 0.0);
+    float3 pressureForce = float3(0.0, 0.0, 0.0);
 
-    int2 sampleCell = getCell2D(samplePos, uniforms.smoothingRadius);
+    int3 sampleCell = getCell3D(samplePos, uniforms.smoothingRadius);
 
-    for (uint offsetIndex = 0; offsetIndex < 9; offsetIndex++) {
-        int2 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
-        uint key = keyFromHash(hashCell2D(cell), uniforms.particleCount);
+    for (uint offsetIndex = 0; offsetIndex < 27; offsetIndex++) {
+        int3 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
+        uint key = keyFromHash(hashCell3D(cell), uniforms.particleCount);
         uint entryIndex = cellStartIndices[key];
 
         if (entryIndex == 0xffffffffu) {
@@ -83,12 +84,12 @@ float2 calculatePressureForce(
             uint particleIndex = lookupEntries[entryIndex].particleIndex;
             Particle p = particles[particleIndex];
 
-            if (all(getCell2D(p.predictedPosition, uniforms.smoothingRadius) == cell)) {
-                float2 offset = p.predictedPosition - samplePos;
+            if (all(getCell3D(p.predictedPosition, uniforms.smoothingRadius) == cell)) {
+                float3 offset = p.predictedPosition - samplePos;
                 float dst = length(offset);
 
                 if (dst > 0.0001 && dst < uniforms.smoothingRadius) {
-                    float2 dir = offset / dst;
+                    float3 dir = offset / dst;
                     float slope = smoothingKernelDerivative(uniforms.smoothingRadius, dst);
                     float nearSlope = nearDensityKernelDerivative(uniforms.smoothingRadius, dst);
                     float neighborDensity = max(p.density, 0.0001);
@@ -100,14 +101,15 @@ float2 calculatePressureForce(
                     ) * dir * uniforms.particleMass / neighborDensity;
                 }
 
-                for (uint ghostIndex = 0; ghostIndex < 8; ghostIndex++) {
-                    if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, ghostIndex)) {
-                        float2 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, ghostIndex);
-                        float2 ghostOffset = ghostPosition - samplePos;
+                for (uint ghostIndex = 0; ghostIndex < 26; ghostIndex++) {
+                    int3 direction = getBoundaryGhostDirection(ghostIndex);
+                    if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, direction)) {
+                        float3 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, ghostIndex);
+                        float3 ghostOffset = ghostPosition - samplePos;
                         float ghostDst = length(ghostOffset);
 
                         if (ghostDst > 0.0001 && ghostDst < uniforms.smoothingRadius) {
-                            float2 ghostDir = ghostOffset / ghostDst;
+                            float3 ghostDir = ghostOffset / ghostDst;
                             float ghostSlope = smoothingKernelDerivative(uniforms.smoothingRadius, ghostDst);
                             float ghostNearSlope = nearDensityKernelDerivative(uniforms.smoothingRadius, ghostDst);
                             float ghostDensity = max(p.density, 0.0001);
@@ -129,20 +131,20 @@ float2 calculatePressureForce(
     return pressureForce;
 }
 
-float2 calculateViscosityAcceleration(
+float3 calculateViscosityAcceleration(
     device const Particle *particles,
     device const SpatialLookupEntry *lookupEntries,
     device const uint *cellStartIndices,
-    float2 samplePos,
-    float2 sampleVelocity,
+    float3 samplePos,
+    float3 sampleVelocity,
     constant Uniforms& uniforms
 ) {
-    float2 viscosityAcceleration = float2(0.0);
-    int2 sampleCell = getCell2D(samplePos, uniforms.smoothingRadius);
+    float3 viscosityAcceleration = float3(0.0);
+    int3 sampleCell = getCell3D(samplePos, uniforms.smoothingRadius);
 
-    for (uint offsetIndex = 0; offsetIndex < 9; offsetIndex++) {
-        int2 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
-        uint key = keyFromHash(hashCell2D(cell), uniforms.particleCount);
+    for (uint offsetIndex = 0; offsetIndex < 27; offsetIndex++) {
+        int3 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
+        uint key = keyFromHash(hashCell3D(cell), uniforms.particleCount);
         uint entryIndex = cellStartIndices[key];
 
         if (entryIndex == 0xffffffffu) {
@@ -153,7 +155,7 @@ float2 calculateViscosityAcceleration(
             uint particleIndex = lookupEntries[entryIndex].particleIndex;
             Particle p = particles[particleIndex];
 
-            if (all(getCell2D(p.predictedPosition, uniforms.smoothingRadius) == cell)) {
+            if (all(getCell3D(p.predictedPosition, uniforms.smoothingRadius) == cell)) {
                 float dst = length(p.predictedPosition - samplePos);
 
                 if (dst > 0.0001 && dst < uniforms.smoothingRadius) {
@@ -180,9 +182,9 @@ kernel void predictPositions(
     }
 
     Particle p = particles[id];
-    float2 predictedVelocity = p.velocity + float2(0.0, -uniforms.gravity) * uniforms.dt;
+    float3 predictedVelocity = p.velocity + float3(0.0, -uniforms.gravity, 0.0) * uniforms.dt;
     p.predictedPosition = p.position + predictedVelocity * uniforms.dt;
-    float2 predictionLimit = uniforms.bounds * 0.5 - uniforms.particleSize;
+    float3 predictionLimit = uniforms.bounds * 0.5 - uniforms.particleSize;
     p.predictedPosition = clamp(p.predictedPosition, -predictionLimit, predictionLimit);
     particles[id] = p;
 }
@@ -201,7 +203,7 @@ kernel void simulateParticles(
     Particle p = particles[id];
 
     float density = max(p.density, 0.0001);
-    float2 pressureForce = calculatePressureForce(
+    float3 pressureForce = calculatePressureForce(
         particles,
         lookupEntries,
         cellStartIndices,
@@ -210,7 +212,7 @@ kernel void simulateParticles(
         p.nearDensity,
         uniforms
     );
-    float2 viscosityAcceleration = calculateViscosityAcceleration(
+    float3 viscosityAcceleration = calculateViscosityAcceleration(
         particles,
         lookupEntries,
         cellStartIndices,
@@ -218,9 +220,9 @@ kernel void simulateParticles(
         p.velocity,
         uniforms
     );
-    float2 acceleration = pressureForce / density
+    float3 acceleration = pressureForce / density
         + viscosityAcceleration
-        + float2(0.0, -uniforms.gravity);
+        + float3(0.0, -uniforms.gravity, 0.0);
     p.velocity += acceleration * uniforms.dt;
 
     if (uniforms.dt > 0.0) {
@@ -232,41 +234,12 @@ kernel void simulateParticles(
         }
     }
     
-    // Create mouse interactions
-    float2 offset = p.position - uniforms.mousePosition;
-    float dist = length(offset);
-    
-    if (uniforms.mouseMode != 0 && dist < uniforms.mouseRadius) {
-        float influence = 1.0 - (dist / uniforms.mouseRadius);
-        
-        float2 dir = (dist > 0.0001) ? (offset / dist) : float2(0.0);
-        
-        // Push
-        if (uniforms.mouseMode == 1) {
-            influence *= influence;
-            float2 radialPush = dir * uniforms.mouseStrength;
-            float2 sweepPush = uniforms.mouseVelocity * 2.0;
-            
-            p.velocity += (radialPush + sweepPush) * influence * uniforms.dt;
-        }
-        // Grab
-        else if (uniforms.mouseMode == 2) {
-            float bowlRadius = uniforms.mouseRadius * 0.7;
-            float containmentDistance = max(0.0, dist - bowlRadius);
-            float2 containmentVelocity = -dir * containmentDistance * 6.0;
-            float2 desiredVelocity = uniforms.mouseVelocity + containmentVelocity;
-            float response = 1.0 - exp(-max(0.0, uniforms.mouseStrength) * influence * uniforms.dt);
-
-            p.velocity = mix(p.velocity, desiredVelocity, response);
-        }
-    }
-    
     p.position += p.velocity * uniforms.dt;
 
-    float2 bounds = uniforms.bounds;
+    float3 bounds = uniforms.bounds;
 
-    if (!insideOriginRectangle(p.position, bounds, uniforms.particleSize)) {
-        float2 limit = bounds * 0.5 - uniforms.particleSize;
+    if (!insideOriginBox(p.position, bounds, uniforms.particleSize)) {
+        float3 limit = bounds * 0.5 - uniforms.particleSize;
 
         if (abs(p.position.x) > limit.x) {
             p.velocity.x *= -0.25;
@@ -327,8 +300,8 @@ kernel void updateSpatialLookup(
     }
 
     Particle p = particles[id];
-    int2 cell = getCell2D(p.predictedPosition, uniforms.smoothingRadius);
-    uint hash = hashCell2D(cell);
+    int3 cell = getCell3D(p.predictedPosition, uniforms.smoothingRadius);
+    uint hash = hashCell3D(cell);
     uint key = keyFromHash(hash, uniforms.particleCount);
     lookupOut[id].particleIndex = id;
     lookupOut[id].cellKey = key;

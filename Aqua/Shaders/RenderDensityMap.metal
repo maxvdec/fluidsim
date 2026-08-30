@@ -39,7 +39,7 @@ vertex DensityVertexOut densityVertex(
 
     DensityVertexOut out;
 
-    float2 siPosition = positions[vertexID] * uniforms.bounds;
+    float2 siPosition = positions[vertexID];
     out.position = float4(siToNDC(siPosition, uniforms.ppm, uniforms.viewportSize), 0.0, 1.0);
 
     out.uv = uvs[vertexID];

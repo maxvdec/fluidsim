@@ -22,48 +22,79 @@ inline float2 siToNDC(float2 position, float ppm, float2 viewportSize) {
     return ndc;
 }
 
-inline bool insideOriginRectangle(float2 pos, float2 rect, float radius) {
-    float2 limit = rect * 0.5 - radius;
-    if (pos.x > limit.x || pos.x < -limit.x) {
-        return false;
-    }
-    
-    if (pos.y > limit.y || pos.y < -limit.y) {
-        return false;
-    }
-    
-    return true;
+inline float4 siToClipSpace(float3 position, float4x4 viewProjectionMatrix) {
+    return viewProjectionMatrix * float4(position, 1.0);
 }
 
-inline float2 getBoundContactPosition(float2 pos, float2 rect, float radius) {
-    float2 limit = rect * 0.5 - radius;
+inline bool insideOriginBox(
+    float3 pos,
+    float3 box,
+    float radius
+) {
+    float3 limit = box * 0.5 - radius;
+
+    return all(abs(pos) <= limit);
+}
+
+inline float3 getBoundContactPosition(
+    float3 pos,
+    float3 box,
+    float radius
+) {
+    float3 limit = box * 0.5 - radius;
+
     return clamp(pos, -limit, limit);
 }
 
 inline float smoothingKernel(float radius, float dst) {
-    if (dst >= radius) return 0;
-    float volume = (PI * pow(radius, 4)) / 6;
-    return (radius - dst) * (radius - dst) / volume;
-}
+    if (dst >= radius) {
+        return 0.0;
+    }
 
-inline float smoothingKernelDerivative(float radius, float dst) {
-    if (dst >= radius) return 0;
-    
-    float scale = 12 / (pow(radius, 4) * PI);
-    return (dst - radius) * scale;
-}
-
-inline float nearDensityKernel(float radius, float dst) {
-    if (dst >= radius) return 0;
-    float volume = PI * pow(radius, 5) / 10;
     float value = radius - dst;
-    return value * value * value / volume;
+
+    return 15.0 * value * value
+         / (2.0 * PI * pow(radius, 5.0));
 }
 
-inline float nearDensityKernelDerivative(float radius, float dst) {
-    if (dst >= radius) return 0;
+inline float smoothingKernelDerivative(
+    float radius,
+    float dst
+) {
+    if (dst >= radius) {
+        return 0.0;
+    }
+
+    return -15.0 * (radius - dst)
+         / (PI * pow(radius, 5.0));
+}
+
+inline float nearDensityKernel(
+    float radius,
+    float dst
+) {
+    if (dst >= radius) {
+        return 0.0;
+    }
+
     float value = radius - dst;
-    return -30 * value * value / (PI * pow(radius, 5));
+
+    return 15.0 * value * value * value
+         / (PI * pow(radius, 6.0));
+}
+
+inline float nearDensityKernelDerivative(
+    float radius,
+    float dst
+) {
+    if (dst >= radius) {
+        return 0.0;
+    }
+
+    float value = radius - dst;
+
+    return -45.0 * value * value
+         / (PI * pow(radius, 6.0));
 }
 
 inline float densityToPressure(float density, float targetDensity, float pressureMultiplier) {
@@ -84,63 +115,130 @@ inline float calculateSharedNearPressure(float nearDensityA, float nearDensityB,
     return (pressureA + pressureB) / 2;
 }
 
-inline bool boundaryGhostIsActive(float2 samplePos, float2 bounds, float radius, uint index) {
-    float2 halfBounds = bounds * 0.5;
-    bool left = samplePos.x + halfBounds.x < radius;
-    bool right = halfBounds.x - samplePos.x < radius;
-    bool bottom = samplePos.y + halfBounds.y < radius;
-    bool top = halfBounds.y - samplePos.y < radius;
+inline bool boundaryGhostIsActive(
+    float3 samplePos,
+    float3 bounds,
+    float radius,
+    int3 direction
+) {
+    float3 halfBounds = bounds * 0.5;
 
-    switch (index) {
-        case 0: return left;
-        case 1: return right;
-        case 2: return bottom;
-        case 3: return top;
-        case 4: return left && bottom;
-        case 5: return left && top;
-        case 6: return right && bottom;
-        case 7: return right && top;
-        default: return false;
+    if (
+        direction.x < 0 &&
+        samplePos.x + halfBounds.x >= radius
+    ) {
+        return false;
     }
-}
 
-inline float2 boundaryGhostPosition(float2 position, float2 bounds, uint index) {
-    switch (index) {
-        case 0: return float2(-bounds.x - position.x, position.y);
-        case 1: return float2(bounds.x - position.x, position.y);
-        case 2: return float2(position.x, -bounds.y - position.y);
-        case 3: return float2(position.x, bounds.y - position.y);
-        case 4: return float2(-bounds.x - position.x, -bounds.y - position.y);
-        case 5: return float2(-bounds.x - position.x, bounds.y - position.y);
-        case 6: return float2(bounds.x - position.x, -bounds.y - position.y);
-        case 7: return float2(bounds.x - position.x, bounds.y - position.y);
-        default: return position;
+    if (
+        direction.x > 0 &&
+        halfBounds.x - samplePos.x >= radius
+    ) {
+        return false;
     }
+
+    if (
+        direction.y < 0 &&
+        samplePos.y + halfBounds.y >= radius
+    ) {
+        return false;
+    }
+
+    if (
+        direction.y > 0 &&
+        halfBounds.y - samplePos.y >= radius
+    ) {
+        return false;
+    }
+
+    if (
+        direction.z < 0 &&
+        samplePos.z + halfBounds.z >= radius
+    ) {
+        return false;
+    }
+
+    if (
+        direction.z > 0 &&
+        halfBounds.z - samplePos.z >= radius
+    ) {
+        return false;
+    }
+
+    return true;
 }
 
-#define HASHK1 15823
-#define HASHK2 9737333
+inline float3 boundaryGhostPosition(
+    float3 position,
+    float3 bounds,
+    int3 direction
+) {
+    float3 ghost = position;
 
-inline int2 getSpatialNeighborOffset(uint index) {
-    constexpr int2 offsets[9] = {
-        int2(-1, 1), int2(0, 1), int2(1, 1),
-        int2(-1, 0), int2(0, 0), int2(1, 0),
-        int2(-1, -1), int2(0, -1), int2(1, -1)
-    };
-    return offsets[index];
+    if (direction.x < 0) {
+        ghost.x = -bounds.x - position.x;
+    } else if (direction.x > 0) {
+        ghost.x = bounds.x - position.x;
+    }
+
+    if (direction.y < 0) {
+        ghost.y = -bounds.y - position.y;
+    } else if (direction.y > 0) {
+        ghost.y = bounds.y - position.y;
+    }
+
+    if (direction.z < 0) {
+        ghost.z = -bounds.z - position.z;
+    } else if (direction.z > 0) {
+        ghost.z = bounds.z - position.z;
+    }
+
+    return ghost;
 }
 
-inline int2 getCell2D(float2 pos, float radius) {
-    return (int2)floor(pos / radius);
+inline int3 getBoundaryGhostDirection(uint index) {
+
+    uint encodedIndex = index;
+
+    if (encodedIndex >= 13) {
+        encodedIndex++;
+    }
+
+    int x = int(encodedIndex % 3) - 1;
+    int y = int((encodedIndex / 3) % 3) - 1;
+    int z = int(encodedIndex / 9) - 1;
+
+    return int3(x, y, z);
 }
 
-inline uint hashCell2D(int2 cell) {
-    uint a = uint(cell.x) * HASHK1;
-    uint b = uint(cell.y) * HASHK2;
-    return a + b;
+#define HASHK1 15823u
+#define HASHK2 9737333u
+#define HASHK3 440817757u
+
+inline int3 getSpatialNeighborOffset(uint index) {
+    int x = int(index % 3) - 1;
+    int y = int((index / 3) % 3) - 1;
+    int z = int(index / 9) - 1;
+
+    return int3(x, y, z);
 }
 
-inline uint keyFromHash(uint hash, uint tableSize) {
+inline int3 getCell3D(float3 pos, float radius) {
+    return int3(floor(pos / radius));
+}
+
+inline uint hashCell3D(int3 cell) {
+    uint x = uint(cell.x) * HASHK1;
+    uint y = uint(cell.y) * HASHK2;
+    uint z = uint(cell.z) * HASHK3;
+
+    return x ^ y ^ z;
+}
+
+inline uint keyFromHash(
+    uint hash,
+    uint tableSize
+) {
     return hash % tableSize;
 }
 

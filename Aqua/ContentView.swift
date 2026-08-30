@@ -166,6 +166,7 @@ struct ParametersView: View {
             Divider()
             FloatField("Bounds X", value: $settings.boundsX, unit: "m")
             FloatField("Bounds Y", value: $settings.boundsY, unit: "m")
+            FloatField("Bounds Z", value: $settings.boundsZ, unit: "m")
             VStack(alignment: .leading) {
                 Text("Boundary Viewport Padding")
                 HStack {

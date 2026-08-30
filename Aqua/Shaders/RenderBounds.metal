@@ -16,13 +16,12 @@ struct BoundsOut {
 
 vertex BoundsOut boundsVertex(
         uint vertexID [[vertex_id]],
-        constant float2* vertices [[buffer(0)]],
+        constant float3* vertices [[buffer(0)]],
         constant Uniforms& uniforms [[buffer(1)]]) {
     BoundsOut out;
+
     
-    float2 si = vertices[vertexID];
-    
-    out.position = float4(siToNDC(si, uniforms.ppm, uniforms.viewportSize), 0.0, 1.0);
+    out.position = float4(siToClipSpace(vertices[vertexID], uniforms.viewProjectionMatrix));
     
     return out;
 }

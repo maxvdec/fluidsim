@@ -5,9 +5,10 @@
 //  Created by Max Van den Eynde on 30/08/2026.
 //
 
+import AppKit
 import Metal
-import SwiftUI
 import MetalKit
+import SwiftUI
 
 enum MouseMode: UInt32 {
     case none = 0
@@ -22,48 +23,124 @@ struct MouseInteractionState {
     var currentSimPosition: SIMD2<Float> = .zero
     var previousSimPosition: SIMD2<Float> = .zero
     var simVelocity: SIMD2<Float> = .zero
-    
+
     var radius: Float = 0.4
     var strength: Float = 20.0
 }
-
 
 final class SimulationMTKView: MTKView {
     var onLeftMouseDown: ((CGPoint) -> Void)?
     var onLeftMouseDragged: ((CGPoint) -> Void)?
     var onLeftMouseUp: (() -> Void)?
-    
-    var onRightMouseDown: ((CGPoint) -> Void)?
-    var onRightMouseDragged: ((CGPoint) -> Void)?
-    var onRightMouseUp: (() -> Void)?
-    
-    override var acceptsFirstResponder: Bool { true }
-    
+
+    var onCameraRotate: ((_ deltaX: Float, _ deltaY: Float) -> Void)?
+    var onCameraZoom: ((_ delta: Float) -> Void)?
+
+    var onCameraMoveChanged: ((
+        _ direction: CameraMoveDirection,
+        _ active: Bool
+    ) -> Void)?
+
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
     override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
+        window?.makeFirstResponder(self)
+
+        let point = convert(
+            event.locationInWindow,
+            from: nil
+        )
+
         onLeftMouseDown?(point)
     }
-    
+
     override func mouseDragged(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
+        let point = convert(
+            event.locationInWindow,
+            from: nil
+        )
+
         onLeftMouseDragged?(point)
     }
-    
+
     override func mouseUp(with event: NSEvent) {
         onLeftMouseUp?()
     }
-    
+
     override func rightMouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        onRightMouseDown?(point)
+        window?.makeFirstResponder(self)
+
+        super.rightMouseDown(with: event)
     }
-    
+
     override func rightMouseDragged(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        onRightMouseDragged?(point)
+        onCameraRotate?(
+            Float(event.deltaX),
+            Float(event.deltaY)
+        )
     }
-    
+
     override func rightMouseUp(with event: NSEvent) {
-        onRightMouseUp?()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        onCameraZoom?(
+            Float(event.scrollingDeltaY)
+        )
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard !event.isARepeat else {
+            return
+        }
+
+        guard let direction = cameraDirection(
+            for: event.keyCode
+        ) else {
+            super.keyDown(with: event)
+            return
+        }
+
+        onCameraMoveChanged?(
+            direction,
+            true
+        )
+    }
+
+    override func keyUp(with event: NSEvent) {
+        guard let direction = cameraDirection(
+            for: event.keyCode
+        ) else {
+            super.keyUp(with: event)
+            return
+        }
+
+        onCameraMoveChanged?(
+            direction,
+            false
+        )
+    }
+
+    private func cameraDirection(
+        for keyCode: UInt16
+    ) -> CameraMoveDirection? {
+        switch keyCode {
+        case 126:
+            return .forward     // up
+
+        case 125:
+            return .backward    // down
+
+        case 123:
+            return .left        // left
+
+        case 124:
+            return .right       // right
+
+        default:
+            return nil
+        }
     }
 }

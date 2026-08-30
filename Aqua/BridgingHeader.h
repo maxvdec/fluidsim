@@ -11,9 +11,9 @@
 #include <simd/simd.h>
 
 struct Particle {
-    simd_float2 position;
-    simd_float2 predictedPosition;
-    simd_float2 velocity;
+    simd_float3 position;
+    simd_float3 predictedPosition;
+    simd_float3 velocity;
     float density;
     float nearDensity;
 };
@@ -23,7 +23,7 @@ struct Uniforms {
     float time;
     
     simd_float2 viewportSize;
-    simd_float2 bounds;
+    simd_float3 bounds;
     float ppm;
     
     float gravity;
@@ -46,6 +46,10 @@ struct Uniforms {
     float mouseRadius;
     float mouseStrength;
     unsigned int mouseMode; // 0 (none), 1 (repel), 2 (grab)
+    
+    simd_float4x4 viewMatrix;
+    simd_float4x4 projectionMatrix;
+    simd_float4x4 viewProjectionMatrix;
 };
 
 struct SpatialLookupEntry {
