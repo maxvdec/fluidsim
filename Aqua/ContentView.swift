@@ -200,9 +200,23 @@ struct ParametersView: View {
             Text("Drag to grab • Shift-drag to repel • Right-drag to orbit • Scroll to zoom or adjust grab depth")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            
-            
-            
+            Divider()
+            IntField("Density Texture Resolution", value: $settings.densityResolution, unit: "px")
+            HStack {
+                Text("Texture Slice")
+
+                Slider(
+                    value: $settings.textureSlice,
+                    in: 0 ... 1
+                )
+
+                Text(
+                    settings.textureSlice.formatted(
+                        .number.precision(.fractionLength(2))
+                    )
+                )
+            }
+
             Spacer()
             Button {
                 settings.paused.toggle()
@@ -215,7 +229,7 @@ struct ParametersView: View {
             }
         }
         .onChange(of: wantsMouse) {
-            if (wantsMouse == true) {
+            if wantsMouse == true {
                 settings.mouseStrength = 20.0
             } else {
                 settings.mouseStrength = 0.0

@@ -47,9 +47,12 @@ struct Uniforms {
     float mouseStrength;
     unsigned int mouseMode; // 0 (none), 1 (repel), 2 (grab)
     
+    float textureSlice;
+    
     simd_float4x4 viewMatrix;
     simd_float4x4 projectionMatrix;
     simd_float4x4 viewProjectionMatrix;
+    simd_float4x4 invViewProjectionMatrix;
 };
 
 struct SpatialLookupEntry {
