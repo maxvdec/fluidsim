@@ -44,7 +44,7 @@ final class SimulationSettings {
     var mouseStrength: Float = 20.0
     var mouseRadius: Float = 1.2
 
-    var densityResolution: Int = 18
+    var densityResolution: Int = 128
 
     var stepSize: Float = 0.1
     var densityMultiplier: Float = 1.0
