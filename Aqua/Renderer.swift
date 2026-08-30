@@ -11,7 +11,18 @@ import Metal
 import MetalKit
 import Observation
 import QuartzCore
+import simd
 import SwiftUI
+
+struct SpawnRegion: Identifiable, Equatable {
+    var id = UUID()
+    var centerX: Float
+    var centerY: Float
+    var centerZ: Float
+    var sizeX: Float
+    var sizeY: Float
+    var sizeZ: Float
+}
 
 @Observable
 final class SimulationSettings {
@@ -29,26 +40,37 @@ final class SimulationSettings {
     var boundsZ: Float = 10.0 // m
     var boundaryViewportPadding: Float = 10.0
 
-    var particles: Int = 32768
-    var particleSpacing: Float = 0.14
+    var particles: Int = 65536
+    var particleSpacing: Float = 0.12
     var randomScattering: Bool = false
+    var spawnJitter: Float = 0.018
+    var spawnRegions: [SpawnRegion] = [
+        SpawnRegion(
+            centerX: 0.0,
+            centerY: -1.35,
+            centerZ: 0.0,
+            sizeX: 5.0,
+            sizeY: 5.0,
+            sizeZ: 5.0
+        )
+    ]
 
-    var smoothingRadius: Float = 0.23 // m
+    var smoothingRadius: Float = 0.21 // m
 
     var targetDensity: Float = 630.0
-    var pressureMultiplier: Float = 288.0
-    var viscosityStrength: Float = 0.001
+    var pressureMultiplier: Float = 220.0
+    var viscosityStrength: Float = 0.018
     var nearPressureMultiplier: Float = 2.25
-    var particleMass: Float = 1.5
+    var particleMass: Float = 1.2
 
     var mouseStrength: Float = 200.0
     var mouseRadius: Float = 4.0
 
-    var densityResolution: Int = 112
+    var densityResolution: Int = 128
 
     var stepSize: Float = 0.025
-    var densityMultiplier: Float = 0.00005
-    var isoLevel: Float = 200.0
+    var densityMultiplier: Float = 0.00008
+    var isoLevel: Float = 155.0
     
     var scatterR: Float = 12.0
     var scatterG: Float = 4.0
@@ -56,24 +78,29 @@ final class SimulationSettings {
     
     var brightnessMultiplier: Float = 1.15
     var waterIOR: Float = 1.333
-    var surfaceRoughness: Float = 0.035
+    var surfaceRoughness: Float = 0.012
+    var surfaceDetailStrength: Float = 0.16
+    var surfaceDetailScale: Float = 5.5
 
     var showBounds = false
 
     var colliderEnabled = true
     var colliderCollisions = true
     var colliderFloating = false
-    var colliderX: Float = 1.8
-    var colliderY: Float = -1.0
+    var colliderX: Float = 4.5
+    var colliderY: Float = -3.4
     var colliderZ: Float = 0.0
     var colliderSizeX: Float = 2.2
     var colliderSizeY: Float = 1.2
     var colliderSizeZ: Float = 2.2
 
     var foamEnabled = true
-    var foamThreshold: Float = 4.0
-    var foamIntensity: Float = 18.0
+    var foamThreshold: Float = 2.5
+    var foamIntensity: Float = 22.0
     var foamScale: Float = 0.085
+    var sprayEnabled = true
+    var sprayIntensity: Float = 1.0
+    var sprayScale: Float = 0.62
 }
 
 struct MetalView: NSViewRepresentable {
@@ -172,50 +199,96 @@ func densityResolution(
     return SIMD3<Int>(x, y, z)
 }
 
-func createParticlesInGrid(
+func createParticlesInSpawnRegions(
     n: Int,
-    settings: SimulationSettings,
-    spacing: Float
+    settings: SimulationSettings
 ) -> [Particle] {
-
-    let side = Int(ceil(pow(Double(n), 1.0 / 3.0)))
-
+    let requestedRegions = settings.spawnRegions.isEmpty
+        ? [SpawnRegion(centerX: 0.0, centerY: 0.0, centerZ: 0.0, sizeX: 1.0, sizeY: 1.0, sizeZ: 1.0)]
+        : settings.spawnRegions
+    let regions = Array(requestedRegions.prefix(max(1, min(requestedRegions.count, n))))
+    let volumes = regions.map {
+        max($0.sizeX, 0.05) * max($0.sizeY, 0.05) * max($0.sizeZ, 0.05)
+    }
+    let totalVolume = max(volumes.reduce(0, +), 0.0001)
     var particles: [Particle] = []
     particles.reserveCapacity(n)
+    var remaining = n
+    let limit = SIMD3<Float>(
+        settings.boundsX * 0.5 - settings.particleRadius,
+        settings.boundsY * 0.5 - settings.particleRadius,
+        settings.boundsZ * 0.5 - settings.particleRadius
+    )
 
-    for i in 0 ..< n {
-        let xIndex = i % side
-        let zIndex = (i / side) % side
-        let yIndex = i / (side * side)
-
-        let width = Float(side - 1) * spacing
-
-        let x =
-            Float(xIndex) * spacing
-            - width * 0.5
-
-        let z =
-            Float(zIndex) * spacing
-            - width * 0.5
-
-        let y =
-            -settings.boundsY * 0.5
-            + settings.particleRadius
-            + Float(yIndex) * spacing
-
-        let position = SIMD3<Float>(x, y, z)
-
-        particles.append(
-            Particle(
-                position: position,
-                predictedPosition: position,
-                velocity: .zero,
-                density: 0,
-                nearDensity: 0
-            )
+    for (regionIndex, region) in regions.enumerated() {
+        let regionsLeft = regions.count - regionIndex - 1
+        let proposed = regionIndex == regions.count - 1
+            ? remaining
+            : Int(round(Float(n) * volumes[regionIndex] / totalVolume))
+        let count = max(1, min(remaining - regionsLeft, proposed))
+        remaining -= count
+        let size = SIMD3<Float>(
+            max(region.sizeX, settings.particleSpacing),
+            max(region.sizeY, settings.particleSpacing),
+            max(region.sizeZ, settings.particleSpacing)
         )
+        let scale = pow(Float(count) / max(size.x * size.y * size.z, 0.0001), 1.0 / 3.0)
+        var dimensions = SIMD3<Int>(
+            max(1, Int(round(size.x * scale))),
+            max(1, Int(round(size.y * scale))),
+            max(1, Int(round(size.z * scale)))
+        )
+        while dimensions.x * dimensions.y * dimensions.z < count {
+            let spacing = size / SIMD3<Float>(
+                Float(max(dimensions.x - 1, 1)),
+                Float(max(dimensions.y - 1, 1)),
+                Float(max(dimensions.z - 1, 1))
+            )
+            if spacing.x >= spacing.y && spacing.x >= spacing.z {
+                dimensions.x += 1
+            } else if spacing.y >= spacing.z {
+                dimensions.y += 1
+            } else {
+                dimensions.z += 1
+            }
+        }
+        let center = SIMD3<Float>(region.centerX, region.centerY, region.centerZ)
+        let step = SIMD3<Float>(
+            dimensions.x > 1 ? size.x / Float(dimensions.x - 1) : 0.0,
+            dimensions.y > 1 ? size.y / Float(dimensions.y - 1) : 0.0,
+            dimensions.z > 1 ? size.z / Float(dimensions.z - 1) : 0.0
+        )
+        for index in 0 ..< count {
+            let gridCount = dimensions.x * dimensions.y * dimensions.z
+            let sampleIndex = count > 1
+                ? Int(round(Float(index) * Float(gridCount - 1) / Float(count - 1)))
+                : 0
+            let x = sampleIndex % dimensions.x
+            let z = (sampleIndex / dimensions.x) % dimensions.z
+            let y = sampleIndex / (dimensions.x * dimensions.z)
+            let grid = SIMD3<Float>(Float(x), Float(y), Float(z))
+            let extent = step * SIMD3<Float>(
+                Float(dimensions.x - 1),
+                Float(dimensions.y - 1),
+                Float(dimensions.z - 1)
+            )
+            let jitter = SIMD3<Float>(
+                Float.random(in: -1.0 ... 1.0),
+                Float.random(in: -1.0 ... 1.0),
+                Float.random(in: -1.0 ... 1.0)
+            ) * min(settings.spawnJitter, settings.particleSpacing * 0.35)
+            let position = simd_clamp(center - extent * 0.5 + grid * step + jitter, -limit, limit)
+            particles.append(
+                Particle(
+                    position: position,
+                    predictedPosition: position,
+                    velocity: .zero,
+                    density: 0,
+                    nearDensity: 0
+                )
+            )
+        }
     }
-
     return particles
 }
 
@@ -265,11 +338,11 @@ func scatterParticlesRandomly(
     }
 }
 
-func createParticles(n: Int, wantsRandom: Bool, settings: SimulationSettings, spacing: Float = 0.1) -> [Particle] {
+func createParticles(n: Int, wantsRandom: Bool, settings: SimulationSettings) -> [Particle] {
     if wantsRandom {
         return scatterParticlesRandomly(n: n, settings: settings)
     } else {
-        return createParticlesInGrid(n: n, settings: settings, spacing: spacing)
+        return createParticlesInSpawnRegions(n: n, settings: settings)
     }
 }
 
@@ -394,19 +467,6 @@ func createBounds(settings: SimulationSettings) -> [SIMD3<Float>] {
     ]
 }
 
-func spatialEntryCount(for particleCount: Int) -> Int {
-    var count = 1
-    while count < particleCount {
-        count <<= 1
-    }
-    return count
-}
-
-func createLookupEntries(particleCount: Int) -> [SpatialLookupEntry] {
-    let lookup = SpatialLookupEntry(particleIndex: UInt32.max, cellKey: UInt32.max)
-    return Array(repeating: lookup, count: spatialEntryCount(for: particleCount))
-}
-
 func createCellStartIndices(particleCount: Int) -> [UInt32] {
     Array(repeating: UInt32.max, count: particleCount)
 }
@@ -417,7 +477,8 @@ func createFoamParticles(count: Int) -> [FoamParticle] {
             position: .zero,
             velocity: .zero,
             lifetime: 0.0,
-            scale: 1.0
+            scale: 1.0,
+            kind: 0.0
         ),
         count: count
     )
@@ -435,10 +496,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let simulationPipeline: MTLComputePipelineState
     private let densityRenderPipeline: MTLComputePipelineState
     private let predictionPipeline: MTLComputePipelineState
-    private let spatialLookupPipeline: MTLComputePipelineState
-    private let spatialSortPipeline: MTLComputePipelineState
     private let spatialClearPipeline: MTLComputePipelineState
-    private let spatialStartPipeline: MTLComputePipelineState
+    private let spatialLinkedListPipeline: MTLComputePipelineState
     private let finalRenderPipeline: MTLComputePipelineState
     private let foamUpdatePipeline: MTLComputePipelineState
 
@@ -456,13 +515,13 @@ final class Renderer: NSObject, MTKViewDelegate {
     var particles: MTLSyncBuffer<Particle>
     private var nextParticles: MTLSyncBuffer<Particle>
     var bounds: MTLSyncBuffer<SIMD3<Float>>
-    var lookupEntries: MTLSyncBuffer<SpatialLookupEntry>
+    private var particleNextIndices: MTLSyncBuffer<UInt32>
     private var cellStartIndices: MTLSyncBuffer<UInt32>
     private var foamParticles: MTLSyncBuffer<FoamParticle>
     private var foamCounter: MTLSyncBuffer<UInt32>
 
     private var uniforms: Uniforms = .init()
-    private let simulationSubsteps = 1
+    private let simulationSubsteps = 2
 
     private var lastFrameTime: CFTimeInterval?
 
@@ -470,6 +529,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastParticleSpacing: Float = .nan
     private var lastParticleRadius: Float = .nan
     private var lastGenerationBounds: SIMD3<Float> = .zero
+    private var lastSpawnRegions: [SpawnRegion] = []
+    private var lastSpawnJitter: Float = .nan
     private var lastDensityConfiguration: [Float] = []
     private var densityVolumeDirty = true
     private var frameIndex: UInt64 = 0
@@ -514,17 +575,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         let predictionFunction = library.makeFunction(name: "predictPositions")!
         self.predictionPipeline = try! device.makeComputePipelineState(function: predictionFunction)
 
-        let lookupEntriesCompute = library.makeFunction(name: "updateSpatialLookup")!
-        self.spatialLookupPipeline = try! device.makeComputePipelineState(function: lookupEntriesCompute)
-
-        let spatialSortFunction = library.makeFunction(name: "sortSpatialLookup")!
-        self.spatialSortPipeline = try! device.makeComputePipelineState(function: spatialSortFunction)
-
         let spatialClearFunction = library.makeFunction(name: "clearCellStartIndices")!
         self.spatialClearPipeline = try! device.makeComputePipelineState(function: spatialClearFunction)
 
-        let spatialStartFunction = library.makeFunction(name: "buildCellStartIndices")!
-        self.spatialStartPipeline = try! device.makeComputePipelineState(function: spatialStartFunction)
+        let spatialLinkedListFunction = library.makeFunction(name: "buildSpatialLinkedList")!
+        self.spatialLinkedListPipeline = try! device.makeComputePipelineState(function: spatialLinkedListFunction)
 
         let finalRenderFunction = library.makeFunction(name: "renderVolume")!
         self.finalRenderPipeline = try! device.makeComputePipelineState(function: finalRenderFunction)
@@ -563,18 +618,20 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         self.depthStencilState = depthState
 
-        let initialParticles = createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings, spacing: settings.particleSpacing)
+        let initialParticles = createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings)
         self.particles = MTLSyncBuffer(device: device, values: initialParticles)
         self.nextParticles = MTLSyncBuffer(device: device, values: initialParticles)
         self.bounds = MTLSyncBuffer(device: device, values: createBounds(settings: settings))
-        self.lookupEntries = MTLSyncBuffer(device: device, values: createLookupEntries(particleCount: initialParticles.count))
+        self.particleNextIndices = MTLSyncBuffer(device: device, values: createCellStartIndices(particleCount: initialParticles.count))
         self.cellStartIndices = MTLSyncBuffer(device: device, values: createCellStartIndices(particleCount: initialParticles.count))
-        self.foamParticles = MTLSyncBuffer(device: device, values: createFoamParticles(count: 4096))
+        self.foamParticles = MTLSyncBuffer(device: device, values: createFoamParticles(count: 8192))
         self.foamCounter = MTLSyncBuffer(device: device, values: [0])
 
         self.lastRandomScattering = settings.randomScattering
         self.lastParticleSpacing = settings.particleSpacing
         self.lastParticleRadius = settings.particleRadius
+        self.lastSpawnRegions = settings.spawnRegions
+        self.lastSpawnJitter = settings.spawnJitter
         self.lastGenerationBounds = SIMD3<Float>(
             settings.boundsX,
             settings.boundsY,
@@ -676,11 +733,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.brightnessMultiplier = settings.brightnessMultiplier
         uniforms.waterIOR = max(settings.waterIOR, 1.0001)
         uniforms.surfaceRoughness = max(settings.surfaceRoughness, 0.0)
+        uniforms.surfaceDetailStrength = max(settings.surfaceDetailStrength, 0.0)
+        uniforms.surfaceDetailScale = max(settings.surfaceDetailScale, 0.01)
         uniforms.foamEnabled = settings.foamEnabled ? 1 : 0
         uniforms.foamThreshold = max(settings.foamThreshold, 0.0)
         uniforms.foamIntensity = max(settings.foamIntensity, 0.0)
         uniforms.foamScale = max(settings.foamScale, 0.01)
         uniforms.foamParticleCapacity = UInt32(foamParticles.count)
+        uniforms.sprayEnabled = settings.sprayEnabled ? 1 : 0
+        uniforms.sprayIntensity = max(settings.sprayIntensity, 0.0)
+        uniforms.sprayScale = max(settings.sprayScale, 0.05)
 
         uniforms.colliderEnabled = settings.colliderEnabled ? 1 : 0
         uniforms.colliderCollisions = settings.colliderCollisions ? 1 : 0
@@ -781,6 +843,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                 || lastParticleSpacing != settings.particleSpacing
                 || lastParticleRadius != settings.particleRadius
                 || lastGenerationBounds != generationBounds
+                || lastSpawnRegions != settings.spawnRegions
+                || lastSpawnJitter != settings.spawnJitter
 
             if shouldRegenerateParticles {
                 regenerateParticles()
@@ -790,10 +854,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             lastParticleSpacing = settings.particleSpacing
             lastParticleRadius = settings.particleRadius
             lastGenerationBounds = generationBounds
+            lastSpawnRegions = settings.spawnRegions
+            lastSpawnJitter = settings.spawnJitter
         }
 
         uniforms.particleCount = UInt32(particles.count)
-        uniforms.spatialEntryCount = UInt32(lookupEntries.count)
         uniforms.particleMass = max(settings.particleMass, 0.0001)
 
         let densityConfiguration = [
@@ -921,59 +986,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.endEncoding()
     }
 
-    private func encodeLookupUpdate(_ commandBuffer: MTLCommandBuffer) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            return
-        }
-
-        encoder.setComputePipelineState(spatialLookupPipeline)
-
-        particles.setAtEncoder(encoder, index: 0)
-        lookupEntries.setAtEncoder(encoder, index: 1)
-
-        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
-
-        let width = spatialLookupPipeline.threadExecutionWidth
-        encoder.dispatchThreads(
-            MTLSize(width: lookupEntries.count, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-        )
-        encoder.endEncoding()
-    }
-
-    private func encodeLookupSort(_ commandBuffer: MTLCommandBuffer) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            return
-        }
-
-        encoder.setComputePipelineState(spatialSortPipeline)
-        lookupEntries.setAtEncoder(encoder, index: 0)
-        encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
-
-        var sequenceLength: UInt32 = 2
-
-        while sequenceLength <= UInt32(lookupEntries.count) {
-            var comparisonDistance = sequenceLength >> 1
-
-            while comparisonDistance > 0 {
-                encoder.setBytes(&comparisonDistance, length: MemoryLayout<UInt32>.stride, index: 2)
-                encoder.setBytes(&sequenceLength, length: MemoryLayout<UInt32>.stride, index: 3)
-
-                let width = spatialSortPipeline.threadExecutionWidth
-                encoder.dispatchThreads(
-                    MTLSize(width: lookupEntries.count, height: 1, depth: 1),
-                    threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-                )
-                lookupEntries.addBarrier(to: encoder)
-                comparisonDistance >>= 1
-            }
-
-            sequenceLength <<= 1
-        }
-
-        encoder.endEncoding()
-    }
-
     private func encodeCellStartIndices(_ commandBuffer: MTLCommandBuffer) {
         guard let clearEncoder = commandBuffer.makeComputeCommandEncoder() else {
             return
@@ -994,12 +1006,13 @@ final class Renderer: NSObject, MTKViewDelegate {
             return
         }
 
-        buildEncoder.setComputePipelineState(spatialStartPipeline)
-        lookupEntries.setAtEncoder(buildEncoder, index: 0)
+        buildEncoder.setComputePipelineState(spatialLinkedListPipeline)
+        particles.setAtEncoder(buildEncoder, index: 0)
         cellStartIndices.setAtEncoder(buildEncoder, index: 1)
-        buildEncoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
+        particleNextIndices.setAtEncoder(buildEncoder, index: 2)
+        buildEncoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 3)
 
-        let buildWidth = spatialStartPipeline.threadExecutionWidth
+        let buildWidth = spatialLinkedListPipeline.threadExecutionWidth
         buildEncoder.dispatchThreads(
             MTLSize(width: particles.count, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: buildWidth, height: 1, depth: 1)
@@ -1016,7 +1029,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         particles.setAtEncoder(encoder, index: 0)
         nextParticles.setAtEncoder(encoder, index: 1)
-        lookupEntries.setAtEncoder(encoder, index: 2)
+        particleNextIndices.setAtEncoder(encoder, index: 2)
         cellStartIndices.setAtEncoder(encoder, index: 3)
 
         encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 4)
@@ -1046,7 +1059,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.setComputePipelineState(foamUpdatePipeline)
         foamParticles.setAtEncoder(encoder, index: 0)
         particles.setAtEncoder(encoder, index: 1)
-        lookupEntries.setAtEncoder(encoder, index: 2)
+        particleNextIndices.setAtEncoder(encoder, index: 2)
         cellStartIndices.setAtEncoder(encoder, index: 3)
         encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 4)
         let width = foamUpdatePipeline.threadExecutionWidth
@@ -1066,7 +1079,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         nextParticles.setAtEncoder(encoder, index: 0)
         particles.setAtEncoder(encoder, index: 1)
-        lookupEntries.setAtEncoder(encoder, index: 2)
+        particleNextIndices.setAtEncoder(encoder, index: 2)
         cellStartIndices.setAtEncoder(encoder, index: 3)
         foamParticles.setAtEncoder(encoder, index: 5)
         foamCounter.setAtEncoder(encoder, index: 6)
@@ -1103,7 +1116,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.setComputePipelineState(densityRenderPipeline)
 
         particles.setAtEncoder(encoder, index: 0)
-        lookupEntries.setAtEncoder(encoder, index: 1)
+        particleNextIndices.setAtEncoder(encoder, index: 1)
         cellStartIndices.setAtEncoder(encoder, index: 2)
 
         encoder.setBytes(
@@ -1241,8 +1254,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         if settings.paused {
             if densityVolumeDirty {
                 encodePrediction(commandBuffer)
-                encodeLookupUpdate(commandBuffer)
-                encodeLookupSort(commandBuffer)
                 encodeCellStartIndices(commandBuffer)
                 encodeDensityCalculation(commandBuffer)
                 encodeDensityPass(commandBuffer)
@@ -1251,17 +1262,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         } else {
             for _ in 0 ..< simulationSubsteps {
                 encodePrediction(commandBuffer)
-
-                encodeLookupUpdate(commandBuffer)
-                encodeLookupSort(commandBuffer)
                 encodeCellStartIndices(commandBuffer)
 
                 encodeDensityCalculation(commandBuffer)
 
                 encodeSimulation(commandBuffer)
-            }
-            if settings.foamEnabled {
-                encodeFoamUpdate(commandBuffer)
+                if settings.foamEnabled {
+                    encodeFoamUpdate(commandBuffer)
+                }
             }
             if frameIndex.isMultiple(of: 2) || densityVolumeDirty {
                 encodeDensityPass(commandBuffer)
@@ -1490,15 +1498,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         let newParticles = createParticles(
             n: particleCount,
             wantsRandom: settings.randomScattering,
-            settings: settings,
-            spacing: settings.particleSpacing
+            settings: settings
         )
 
         particles.assign(new: newParticles)
         nextParticles.assign(new: newParticles)
 
-        lookupEntries.assign(
-            new: createLookupEntries(particleCount: particleCount)
+        particleNextIndices.assign(
+            new: createCellStartIndices(particleCount: particleCount)
         )
 
         cellStartIndices.assign(
@@ -1513,6 +1520,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         lastRandomScattering = settings.randomScattering
         lastParticleSpacing = settings.particleSpacing
         lastParticleRadius = settings.particleRadius
+        lastSpawnRegions = settings.spawnRegions
+        lastSpawnJitter = settings.spawnJitter
         lastGenerationBounds = SIMD3(
             settings.boundsX,
             settings.boundsY,

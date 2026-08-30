@@ -98,7 +98,11 @@ inline float nearDensityKernelDerivative(
 }
 
 inline float densityToPressure(float density, float targetDensity, float pressureMultiplier) {
-    float densityError = density - targetDensity;
+    float densityError = clamp(
+        density - targetDensity,
+        -targetDensity * 0.035,
+        targetDensity * 0.5
+    );
     float pressure = densityError * pressureMultiplier;
     return pressure;
 }

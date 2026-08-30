@@ -104,7 +104,10 @@ inline float3 calculateNormal(
     float3 bounds,
     texture3d<float, access::sample> volume,
     sampler volumeSampler,
-    float isoLevel
+    float isoLevel,
+    float detailStrength,
+    float detailScale,
+    float time
 ) {
     float3 dimensions = float3(
         volume.get_width(),
@@ -112,9 +115,8 @@ inline float3 calculateNormal(
         volume.get_depth()
     );
     float3 voxel = max(bounds / dimensions, float3(0.0001));
-    float3 fineOffset = voxel * 0.65;
-    float3 broadOffset = voxel * 1.35;
-    float3 fine = float3(
+    float3 fineOffset = voxel * 0.42;
+    float3 gradient = float3(
         sampleVolume(position - float3(fineOffset.x, 0.0, 0.0), bounds, volume, volumeSampler, isoLevel).x
             - sampleVolume(position + float3(fineOffset.x, 0.0, 0.0), bounds, volume, volumeSampler, isoLevel).x,
         sampleVolume(position - float3(0.0, fineOffset.y, 0.0), bounds, volume, volumeSampler, isoLevel).x
@@ -122,19 +124,20 @@ inline float3 calculateNormal(
         sampleVolume(position - float3(0.0, 0.0, fineOffset.z), bounds, volume, volumeSampler, isoLevel).x
             - sampleVolume(position + float3(0.0, 0.0, fineOffset.z), bounds, volume, volumeSampler, isoLevel).x
     ) / fineOffset;
-    float3 broad = float3(
-        sampleVolume(position - float3(broadOffset.x, 0.0, 0.0), bounds, volume, volumeSampler, isoLevel).x
-            - sampleVolume(position + float3(broadOffset.x, 0.0, 0.0), bounds, volume, volumeSampler, isoLevel).x,
-        sampleVolume(position - float3(0.0, broadOffset.y, 0.0), bounds, volume, volumeSampler, isoLevel).x
-            - sampleVolume(position + float3(0.0, broadOffset.y, 0.0), bounds, volume, volumeSampler, isoLevel).x,
-        sampleVolume(position - float3(0.0, 0.0, broadOffset.z), bounds, volume, volumeSampler, isoLevel).x
-            - sampleVolume(position + float3(0.0, 0.0, broadOffset.z), bounds, volume, volumeSampler, isoLevel).x
-    ) / broadOffset;
-    float3 gradient = mix(broad, fine, 0.68);
     if (dot(gradient, gradient) < 0.00000001) {
         return float3(0.0, 1.0, 0.0);
     }
     float3 normal = normalize(gradient);
+    float2 directionA = normalize(float2(0.82, 0.57));
+    float2 directionB = normalize(float2(-0.31, 0.95));
+    float2 directionC = normalize(float2(0.97, -0.24));
+    float2 point = position.xz * detailScale;
+    float2 waveGradient = directionA * cos(dot(point, directionA) * 1.17 + time * 1.45)
+        + directionB * cos(dot(point, directionB) * 2.31 - time * 1.92) * 0.54
+        + directionC * cos(dot(point, directionC) * 4.73 + time * 2.63) * 0.22;
+    float3 perturbation = float3(-waveGradient.x, 0.0, -waveGradient.y);
+    perturbation -= normal * dot(perturbation, normal);
+    normal = normalize(normal + perturbation * detailStrength);
     float3 faceDistance = bounds * 0.5 - abs(position);
     float nearest = min(faceDistance.x, min(faceDistance.y, faceDistance.z));
     float3 faceNormal;
@@ -158,7 +161,10 @@ inline SurfaceHit raymarchTransition(
     texture3d<float, access::sample> volume,
     sampler volumeSampler,
     float stepSize,
-    float isoLevel
+    float isoLevel,
+    float detailStrength,
+    float detailScale,
+    float time
 ) {
     SurfaceHit result = {false, 0.0, float3(0.0), float3(0.0), 0.0};
     float2 interval = boxInterval(origin, direction, float3(0.0), bounds);
@@ -191,7 +197,10 @@ inline SurfaceHit raymarchTransition(
             result.hit = true;
             result.t = (low + high) * 0.5;
             result.position = origin + direction * result.t;
-            result.normal = calculateNormal(result.position, bounds, volume, volumeSampler, isoLevel);
+            result.normal = calculateNormal(
+                result.position, bounds, volume, volumeSampler, isoLevel,
+                detailStrength, detailScale, time
+            );
             result.foam = sampleVolume(result.position, bounds, volume, volumeSampler, isoLevel).y;
             return result;
         }
@@ -388,6 +397,15 @@ inline float3 linearToSRGB(float3 color) {
     return select(high, low, color <= float3(0.0031308));
 }
 
+inline float3 waterScattering(float3 transmittance, float3 direction) {
+    float forwardPhase = pow(max(dot(normalize(direction), sunDirection()), 0.0), 6.0);
+    float3 scattered = float3(0.012, 0.11, 0.19) * (1.0 - transmittance);
+    float meanTransmission = dot(transmittance, float3(0.333333));
+    scattered += float3(0.004, 0.035, 0.07)
+        * (1.0 - meanTransmission) * (0.55 + forwardPhase * 0.8);
+    return scattered;
+}
+
 inline float deviceDepth(float3 position, float4x4 viewProjection) {
     float4 clip = viewProjection * float4(position, 1.0);
     return saturate(clip.z / clip.w);
@@ -419,7 +437,8 @@ kernel void renderVolume(
         : 1.0;
     SurfaceHit entry = raymarchTransition(
         rayOrigin, rayDirection, true, uniforms.bounds, volume,
-        volumeSampler, uniforms.stepSize, uniforms.isoLevel
+        volumeSampler, uniforms.stepSize, uniforms.isoLevel,
+        uniforms.surfaceDetailStrength, uniforms.surfaceDetailScale, uniforms.time
     );
 
     if (entry.hit && entry.t < primaryEnvironment.distance) {
@@ -434,15 +453,17 @@ kernel void renderVolume(
         );
         float3 reflectedLight = sampleEnvironment(entry.position + entryNormal * 0.003, reflectedDirection, uniforms);
         float3 waterDirection = refract(rayDirection, entryNormal, 1.0 / uniforms.waterIOR);
-        float3 waterLight = reflectedLight;
+        float3 waterLight = primaryEnvironment.color;
 
         if (dot(waterDirection, waterDirection) > 0.5) {
             waterDirection = normalize(waterDirection);
             float3 waterOrigin = entry.position + waterDirection * max(uniforms.stepSize * 0.25, 0.003);
             SurfaceHit exitHit = raymarchTransition(
                 waterOrigin, waterDirection, false, uniforms.bounds, volume,
-                volumeSampler, uniforms.stepSize, uniforms.isoLevel
+                volumeSampler, uniforms.stepSize, uniforms.isoLevel,
+                uniforms.surfaceDetailStrength, uniforms.surfaceDetailScale, uniforms.time
             );
+            waterLight = sampleEnvironment(waterOrigin, waterDirection, uniforms);
             EnvironmentSample submergedEnvironment = traceEnvironment(waterOrigin, waterDirection, uniforms);
             float3 extinction = max(float3(uniforms.scatterR, uniforms.scatterG, uniforms.scatterB), float3(0.0));
             if (submergedEnvironment.hit && (!exitHit.hit || submergedEnvironment.distance < exitHit.t)) {
@@ -451,9 +472,8 @@ kernel void renderVolume(
                     volumeSampler, uniforms.stepSize, uniforms.isoLevel, uniforms.densityMultiplier
                 );
                 float3 transmittance = exp(-extinction * opticalDepth);
-                float absorbed = 1.0 - dot(transmittance, float3(0.333333));
                 waterLight = submergedEnvironment.color * transmittance
-                    + float3(0.008, 0.055, 0.075) * absorbed;
+                    + waterScattering(transmittance, waterDirection);
             } else if (exitHit.hit) {
                 float opticalDepth = integrateDensity(
                     waterOrigin, waterDirection, exitHit.t, uniforms.bounds, volume,
@@ -473,7 +493,8 @@ kernel void renderVolume(
                 float3 internalOrigin = exitHit.position + internalDirection * max(uniforms.stepSize * 0.25, 0.003);
                 SurfaceHit secondExit = raymarchTransition(
                     internalOrigin, internalDirection, false, uniforms.bounds, volume,
-                    volumeSampler, uniforms.stepSize * 1.2, uniforms.isoLevel
+                    volumeSampler, uniforms.stepSize * 1.2, uniforms.isoLevel,
+                    uniforms.surfaceDetailStrength, uniforms.surfaceDetailScale, uniforms.time
                 );
                 float3 internalLight = sampleEnvironment(exitHit.position, internalDirection, uniforms);
                 if (secondExit.hit) {
@@ -496,19 +517,12 @@ kernel void renderVolume(
                     internalLight *= exp(-extinction * secondDepth);
                 }
                 float3 exitLight = mix(transmittedEnvironment, internalLight, exitFresnel);
-                float absorbed = 1.0 - dot(transmittance, float3(0.333333));
                 waterLight = exitLight * transmittance
-                    + float3(0.008, 0.055, 0.075) * absorbed;
-                float exitFoam = foamMask(exitHit, uniforms);
-                waterLight = mix(waterLight, float3(0.82, 0.9, 0.92), exitFoam * 0.55);
+                    + waterScattering(transmittance, waterDirection);
             }
         }
 
         color = mix(waterLight, reflectedLight, entryFresnel);
-        float foam = foamMask(entry, uniforms);
-        float foamFresnel = pow(1.0 - saturate(dot(-rayDirection, entryNormal)), 3.0);
-        float3 foamColor = float3(0.86, 0.93, 0.95) * (0.76 + 0.24 * saturate(dot(entryNormal, sunDirection())));
-        color = mix(color, foamColor, saturate(foam * (0.72 + foamFresnel * 0.28)));
     }
 
     color *= max(uniforms.brightnessMultiplier, 0.0);

@@ -23,6 +23,7 @@ struct FoamParticle {
     simd_float3 velocity;
     float lifetime;
     float scale;
+    float kind;
 };
 
 struct Uniforms {
@@ -46,8 +47,6 @@ struct Uniforms {
     float nearPressureMultiplier;
     float particleMass;
 
-    unsigned int spatialEntryCount;
-    
     simd_float3 mousePosition;
     simd_float3 mouseVelocity;
     float mouseRadius;
@@ -65,11 +64,16 @@ struct Uniforms {
 
     float waterIOR;
     float surfaceRoughness;
+    float surfaceDetailStrength;
+    float surfaceDetailScale;
     unsigned int foamEnabled;
     float foamThreshold;
     float foamIntensity;
     float foamScale;
     unsigned int foamParticleCapacity;
+    unsigned int sprayEnabled;
+    float sprayIntensity;
+    float sprayScale;
 
     unsigned int colliderEnabled;
     unsigned int colliderCollisions;
@@ -83,11 +87,5 @@ struct Uniforms {
     simd_float4x4 viewProjectionMatrix;
     simd_float4x4 invViewProjectionMatrix;
 };
-
-struct SpatialLookupEntry {
-    unsigned int particleIndex;
-    unsigned int cellKey;
-};
-
 
 #endif /* BridgingHeader_h */

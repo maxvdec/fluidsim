@@ -216,7 +216,7 @@ struct ParametersView: View {
                 }
                 HStack {
                     Text("Target Density")
-                    Slider(value: $settings.targetDensity, in: 1 ... 500)
+                    Slider(value: $settings.targetDensity, in: 100 ... 1000)
                     Text(settings.targetDensity.formatted(.number.precision(.fractionLength(2))))
                 }
                 FloatField("Pressure Multiplier", value: $settings.pressureMultiplier, unit: "")
@@ -252,6 +252,57 @@ struct ParametersView: View {
                 Toggle(isOn: $settings.randomScattering) {
                     Text("Scatter randomly")
                 }
+                if !settings.randomScattering {
+                    FloatField("Spawn Jitter", value: $settings.spawnJitter, unit: "m", isZeroPermitted: true)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Spawn Cubes")
+                            .font(.headline)
+                        ForEach(Array(settings.spawnRegions.indices), id: \.self) { index in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Cube \(index + 1)")
+                                        .font(.subheadline)
+                                        .bold()
+                                    Spacer()
+                                    if settings.spawnRegions.count > 1 {
+                                        Button {
+                                            settings.spawnRegions.remove(at: index)
+                                        } label: {
+                                            Image(systemName: "minus.circle")
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                FloatField("X", value: $settings.spawnRegions[index].centerX, unit: "m", isZeroPermitted: true)
+                                FloatField("Y", value: $settings.spawnRegions[index].centerY, unit: "m", isZeroPermitted: true)
+                                FloatField("Z", value: $settings.spawnRegions[index].centerZ, unit: "m", isZeroPermitted: true)
+                                FloatField("Size X", value: $settings.spawnRegions[index].sizeX, unit: "m")
+                                FloatField("Size Y", value: $settings.spawnRegions[index].sizeY, unit: "m")
+                                FloatField("Size Z", value: $settings.spawnRegions[index].sizeZ, unit: "m")
+                            }
+                            .padding(8)
+                            .background(.black.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        Button {
+                            let offset = Float(settings.spawnRegions.count) * 1.25
+                            settings.spawnRegions.append(
+                                SpawnRegion(
+                                    centerX: offset,
+                                    centerY: -1.35,
+                                    centerZ: 0.0,
+                                    sizeX: 2.5,
+                                    sizeY: 4.0,
+                                    sizeZ: 2.5
+                                )
+                            )
+                        } label: {
+                            Label("Add Spawn Cube", systemImage: "plus")
+                        }
+                        Text("Spawn changes apply while paused or after reset.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Divider()
                 FloatField("Mouse Radius", value: $settings.mouseRadius, unit: "")
                 FloatField("Mouse Strength", value: $settings.mouseStrength, unit: "")
@@ -263,7 +314,7 @@ struct ParametersView: View {
                     .foregroundStyle(.secondary)
                 Divider()
                 IntField("Density Texture Resolution", value: $settings.densityResolution, unit: "px")
-                Text("Actual resolution is: \(densityResolution(maxResolution: settings.densityResolution, bounds: SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ)))")
+                Text("Actual resolution is: \(actualDensityResolution.x) × \(actualDensityResolution.y) × \(actualDensityResolution.z)")
                 FloatField("Density Multiplier", value: $settings.densityMultiplier, unit: "")
                 FloatField("ISO Level", value: $settings.isoLevel, unit: "")
                 HStack {
@@ -288,6 +339,8 @@ struct ParametersView: View {
                 FloatField("Brightness multiplier", value: $settings.brightnessMultiplier, unit: "")
                 FloatField("Water IOR", value: $settings.waterIOR, unit: "")
                 FloatField("Surface Roughness", value: $settings.surfaceRoughness, unit: "")
+                FloatField("Wave Detail", value: $settings.surfaceDetailStrength, unit: "")
+                FloatField("Wave Scale", value: $settings.surfaceDetailScale, unit: "")
 
                 Divider()
                 Toggle("Foam", isOn: $settings.foamEnabled)
@@ -295,6 +348,11 @@ struct ParametersView: View {
                     FloatField("Foam Threshold", value: $settings.foamThreshold, unit: "")
                     FloatField("Foam Intensity", value: $settings.foamIntensity, unit: "")
                     FloatField("Foam Scale", value: $settings.foamScale, unit: "")
+                    Toggle("Spray", isOn: $settings.sprayEnabled)
+                    if settings.sprayEnabled {
+                        FloatField("Spray Intensity", value: $settings.sprayIntensity, unit: "")
+                        FloatField("Spray Scale", value: $settings.sprayScale, unit: "")
+                    }
                 }
 
                 Divider()
@@ -348,6 +406,13 @@ struct ParametersView: View {
         }
 
         return "Boundary fits screen"
+    }
+
+    private var actualDensityResolution: SIMD3<Int> {
+        densityResolution(
+            maxResolution: settings.densityResolution,
+            bounds: SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ)
+        )
     }
 }
 

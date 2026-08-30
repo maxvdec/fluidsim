@@ -25,7 +25,7 @@ inline float nearSlopeFast(float distance, float radius, float scale) {
 
 float2 calculateDensitiesAtPosition(
     device const Particle *particles,
-    device const SpatialLookupEntry *lookupEntries,
+    device const uint *particleNextIndices,
     device const uint *cellStartIndices,
     float3 samplePosition,
     constant Uniforms &uniforms
@@ -41,12 +41,12 @@ float2 calculateDensitiesAtPosition(
     for (uint offsetIndex = 0; offsetIndex < 27; offsetIndex++) {
         int3 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
         uint key = keyFromHash(hashCell3D(cell), uniforms.particleCount);
-        uint entryIndex = cellStartIndices[key];
-        if (entryIndex == 0xffffffffu) {
+        uint particleIndex = cellStartIndices[key];
+        if (particleIndex == 0xffffffffu) {
             continue;
         }
-        while (entryIndex < uniforms.particleCount && lookupEntries[entryIndex].cellKey == key) {
-            Particle particle = particles[lookupEntries[entryIndex].particleIndex];
+        while (particleIndex != 0xffffffffu) {
+            Particle particle = particles[particleIndex];
             if (all(getCell3D(particle.predictedPosition, radius) == cell)) {
                 float3 offset = particle.predictedPosition - samplePosition;
                 float distanceSquared = dot(offset, offset);
@@ -56,7 +56,15 @@ float2 calculateDensitiesAtPosition(
                     density.y += uniforms.particleMass * nearKernelFast(distance, radius, nearScale);
                 }
             }
-            entryIndex++;
+            particleIndex = particleNextIndices[particleIndex];
+        }
+    }
+    float3 wallDistance = uniforms.bounds * 0.5 - abs(samplePosition);
+    for (uint axis = 0; axis < 3; axis++) {
+        float ghostDistance = max(wallDistance[axis] * 2.0, 0.0);
+        if (ghostDistance < radius) {
+            density.x += uniforms.particleMass * densityKernelFast(ghostDistance, radius, densityScale);
+            density.y += uniforms.particleMass * nearKernelFast(ghostDistance, radius, nearScale);
         }
     }
     return density;
@@ -71,7 +79,7 @@ struct ForceResult {
 
 ForceResult calculateForces(
     device const Particle *particles,
-    device const SpatialLookupEntry *lookupEntries,
+    device const uint *particleNextIndices,
     device const uint *cellStartIndices,
     float3 samplePosition,
     float sampleDensity,
@@ -91,19 +99,19 @@ ForceResult calculateForces(
     for (uint offsetIndex = 0; offsetIndex < 27; offsetIndex++) {
         int3 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
         uint key = keyFromHash(hashCell3D(cell), uniforms.particleCount);
-        uint entryIndex = cellStartIndices[key];
-        if (entryIndex == 0xffffffffu) {
+        uint particleIndex = cellStartIndices[key];
+        if (particleIndex == 0xffffffffu) {
             continue;
         }
-        while (entryIndex < uniforms.particleCount && lookupEntries[entryIndex].cellKey == key) {
-            Particle particle = particles[lookupEntries[entryIndex].particleIndex];
+        while (particleIndex != 0xffffffffu) {
+            Particle particle = particles[particleIndex];
             if (all(getCell3D(particle.predictedPosition, radius) == cell)) {
                 float3 offset = particle.predictedPosition - samplePosition;
                 float distanceSquared = dot(offset, offset);
                 if (distanceSquared > 0.00000001 && distanceSquared < radiusSquared) {
                     float distance = sqrt(distanceSquared);
-                    float neighborDensity = max(particle.density, 0.0001);
-                    float neighborNearDensity = max(particle.nearDensity, 0.0001);
+                    float neighborDensity = max(particle.density, uniforms.targetDensity * 0.15);
+                    float neighborNearDensity = max(particle.nearDensity, 0.01);
                     float pressure = calculateSharedPressure(sampleDensity, neighborDensity, uniforms.targetDensity, uniforms.pressureMultiplier);
                     float nearPressure = calculateSharedNearPressure(sampleNearDensity, particle.nearDensity, uniforms.nearPressureMultiplier);
                     float slope = densitySlopeFast(distance, radius, slopeScale);
@@ -124,7 +132,7 @@ ForceResult calculateForces(
                     result.neighbours++;
                 }
             }
-            entryIndex++;
+            particleIndex = particleNextIndices[particleIndex];
         }
     }
     result.viscosity *= uniforms.viscosityStrength;
@@ -189,7 +197,7 @@ kernel void predictPositions(
 kernel void simulateParticles(
     device const Particle *particles [[buffer(0)]],
     device Particle *outputParticles [[buffer(1)]],
-    device const SpatialLookupEntry *lookupEntries [[buffer(2)]],
+    device const uint *particleNextIndices [[buffer(2)]],
     device const uint *cellStartIndices [[buffer(3)]],
     constant Uniforms &uniforms [[buffer(4)]],
     device FoamParticle *foamParticles [[buffer(5)]],
@@ -200,14 +208,25 @@ kernel void simulateParticles(
         return;
     }
     Particle particle = particles[id];
-    float density = max(particle.density, 0.0001);
+    float density = max(particle.density, uniforms.targetDensity * 0.15);
     ForceResult forces = calculateForces(
-        particles, lookupEntries, cellStartIndices, particle.predictedPosition,
+        particles, particleNextIndices, cellStartIndices, particle.predictedPosition,
         density, particle.nearDensity, particle.velocity, uniforms
     );
     float3 acceleration = forces.pressure / density + forces.viscosity;
     acceleration.y -= uniforms.gravity;
+    if (uniforms.dt > 0.0) {
+        float accelerationSquared = dot(acceleration, acceleration);
+        float maxAcceleration = max(
+            60.0,
+            uniforms.smoothingRadius * 0.08 / (uniforms.dt * uniforms.dt)
+        );
+        if (accelerationSquared > maxAcceleration * maxAcceleration) {
+            acceleration *= maxAcceleration * rsqrt(accelerationSquared);
+        }
+    }
     particle.velocity += acceleration * uniforms.dt;
+    particle.velocity *= exp(-0.08 * uniforms.dt);
 
     if (forces.neighbours < 8) {
         particle.velocity -= particle.velocity * uniforms.dt * 0.75;
@@ -221,7 +240,8 @@ kernel void simulateParticles(
             ? saturate((kineticEnergy - 1.5) / 18.0)
             : 0.0;
         float spawnProbability = saturate(
-            (agitation * kineticFactor + surfaceFactor * 1.5)
+            (agitation * kineticFactor
+                + surfaceFactor * 1.5 * float(uniforms.sprayEnabled) * uniforms.sprayIntensity)
             * uniforms.foamIntensity * uniforms.dt * 0.035
         );
         uint randomState = id * 19349669u ^ as_type<uint>(uniforms.time) * 83492791u;
@@ -238,6 +258,9 @@ kernel void simulateParticles(
             foam.velocity = particle.velocity + jitter * 0.35;
             foam.lifetime = mix(4.0, 9.0, randomValue(randomState));
             foam.scale = mix(0.65, 1.35, randomValue(randomState));
+            foam.kind = forces.neighbours <= 5 && uniforms.sprayEnabled != 0
+                ? 0.0
+                : (forces.neighbours >= 18 ? 2.0 : 1.0);
             foamParticles[foamIndex] = foam;
         }
     }
@@ -263,7 +286,7 @@ kernel void simulateParticles(
 
     if (uniforms.dt > 0.0) {
         float speedSquared = dot(particle.velocity, particle.velocity);
-        float maxSpeed = uniforms.smoothingRadius * 0.4 / uniforms.dt;
+        float maxSpeed = uniforms.smoothingRadius * 0.3 / uniforms.dt;
         if (speedSquared > maxSpeed * maxSpeed) {
             particle.velocity *= maxSpeed * rsqrt(speedSquared);
         }
@@ -293,7 +316,7 @@ kernel void simulateParticles(
 kernel void calculateDensities(
     device const Particle *particles [[buffer(0)]],
     device Particle *outputParticles [[buffer(1)]],
-    device const SpatialLookupEntry *lookupEntries [[buffer(2)]],
+    device const uint *particleNextIndices [[buffer(2)]],
     device const uint *cellStartIndices [[buffer(3)]],
     constant Uniforms &uniforms [[buffer(4)]],
     uint id [[thread_position_in_grid]]
@@ -303,57 +326,11 @@ kernel void calculateDensities(
     }
     Particle particle = particles[id];
     float2 densities = calculateDensitiesAtPosition(
-        particles, lookupEntries, cellStartIndices, particle.predictedPosition, uniforms
+        particles, particleNextIndices, cellStartIndices, particle.predictedPosition, uniforms
     );
     particle.density = densities.x;
     particle.nearDensity = densities.y;
     outputParticles[id] = particle;
-}
-
-kernel void updateSpatialLookup(
-    device const Particle *particles [[buffer(0)]],
-    device SpatialLookupEntry *lookupOut [[buffer(1)]],
-    constant Uniforms &uniforms [[buffer(2)]],
-    uint id [[thread_position_in_grid]]
-) {
-    if (id >= uniforms.spatialEntryCount) {
-        return;
-    }
-    if (id >= uniforms.particleCount) {
-        lookupOut[id].particleIndex = 0xffffffffu;
-        lookupOut[id].cellKey = 0xffffffffu;
-        return;
-    }
-    int3 cell = getCell3D(particles[id].predictedPosition, uniforms.smoothingRadius);
-    lookupOut[id].particleIndex = id;
-    lookupOut[id].cellKey = keyFromHash(hashCell3D(cell), uniforms.particleCount);
-}
-
-kernel void sortSpatialLookup(
-    device SpatialLookupEntry *entries [[buffer(0)]],
-    constant Uniforms &uniforms [[buffer(1)]],
-    constant uint &comparisonDistance [[buffer(2)]],
-    constant uint &sequenceLength [[buffer(3)]],
-    uint id [[thread_position_in_grid]]
-) {
-    if (id >= uniforms.spatialEntryCount) {
-        return;
-    }
-    uint partnerIndex = id ^ comparisonDistance;
-    if (partnerIndex <= id || partnerIndex >= uniforms.spatialEntryCount) {
-        return;
-    }
-    SpatialLookupEntry entry = entries[id];
-    SpatialLookupEntry partner = entries[partnerIndex];
-    bool ascending = (id & sequenceLength) == 0;
-    bool entryGreater = entry.cellKey > partner.cellKey
-        || (entry.cellKey == partner.cellKey && entry.particleIndex > partner.particleIndex);
-    bool partnerGreater = partner.cellKey > entry.cellKey
-        || (partner.cellKey == entry.cellKey && partner.particleIndex > entry.particleIndex);
-    if ((ascending && entryGreater) || (!ascending && partnerGreater)) {
-        entries[id] = partner;
-        entries[partnerIndex] = entry;
-    }
 }
 
 kernel void clearCellStartIndices(
@@ -366,25 +343,27 @@ kernel void clearCellStartIndices(
     }
 }
 
-kernel void buildCellStartIndices(
-    device const SpatialLookupEntry *lookupEntries [[buffer(0)]],
-    device uint *cellStartIndices [[buffer(1)]],
-    constant Uniforms &uniforms [[buffer(2)]],
+kernel void buildSpatialLinkedList(
+    device const Particle *particles [[buffer(0)]],
+    device atomic_uint *cellStartIndices [[buffer(1)]],
+    device uint *particleNextIndices [[buffer(2)]],
+    constant Uniforms &uniforms [[buffer(3)]],
     uint id [[thread_position_in_grid]]
 ) {
     if (id >= uniforms.particleCount) {
         return;
     }
-    SpatialLookupEntry entry = lookupEntries[id];
-    if (id == 0 || entry.cellKey != lookupEntries[id - 1].cellKey) {
-        cellStartIndices[entry.cellKey] = id;
-    }
+    int3 cell = getCell3D(particles[id].predictedPosition, uniforms.smoothingRadius);
+    uint key = keyFromHash(hashCell3D(cell), uniforms.particleCount);
+    particleNextIndices[id] = atomic_exchange_explicit(
+        &cellStartIndices[key], id, memory_order_relaxed
+    );
 }
 
 kernel void updateFoamParticles(
     device FoamParticle *foamParticles [[buffer(0)]],
     device const Particle *particles [[buffer(1)]],
-    device const SpatialLookupEntry *lookupEntries [[buffer(2)]],
+    device const uint *particleNextIndices [[buffer(2)]],
     device const uint *cellStartIndices [[buffer(3)]],
     constant Uniforms &uniforms [[buffer(4)]],
     uint id [[thread_position_in_grid]]
@@ -409,12 +388,12 @@ kernel void updateFoamParticles(
     for (uint offsetIndex = 0; offsetIndex < 27; offsetIndex++) {
         int3 cell = sampleCell + getSpatialNeighborOffset(offsetIndex);
         uint key = keyFromHash(hashCell3D(cell), uniforms.particleCount);
-        uint entryIndex = cellStartIndices[key];
-        if (entryIndex == 0xffffffffu) {
+        uint particleIndex = cellStartIndices[key];
+        if (particleIndex == 0xffffffffu) {
             continue;
         }
-        while (entryIndex < uniforms.particleCount && lookupEntries[entryIndex].cellKey == key) {
-            Particle particle = particles[lookupEntries[entryIndex].particleIndex];
+        while (particleIndex != 0xffffffffu) {
+            Particle particle = particles[particleIndex];
             if (all(getCell3D(particle.predictedPosition, radius) == cell)) {
                 float3 offset = particle.predictedPosition - foam.position;
                 float distanceSquared = dot(offset, offset);
@@ -426,22 +405,25 @@ kernel void updateFoamParticles(
                     neighbourCount++;
                 }
             }
-            entryIndex++;
+            particleIndex = particleNextIndices[particleIndex];
         }
     }
 
     if (neighbourCount <= 5) {
+        foam.kind = 0.0;
         float speedSquared = dot(foam.velocity, foam.velocity);
         float3 drag = speedSquared > 0.000001
             ? -normalize(foam.velocity) * speedSquared * 0.04
             : float3(0.0);
         foam.velocity += (float3(0.0, -uniforms.gravity, 0.0) + drag) * uniforms.dt;
     } else if (neighbourCount >= 18 && weightSum > 0.000001) {
+        foam.kind = 2.0;
         float3 fluidVelocity = velocitySum / weightSum;
         foam.velocity += ((fluidVelocity - foam.velocity) * 3.0 + float3(0.0, uniforms.gravity * 0.5, 0.0))
             * uniforms.dt;
         foam.scale = mix(foam.scale, 0.55, saturate(uniforms.dt * 5.0));
     } else if (weightSum > 0.000001) {
+        foam.kind = 1.0;
         foam.velocity = mix(foam.velocity, velocitySum / weightSum, saturate(uniforms.dt * 12.0));
         foam.scale = mix(foam.scale, 1.0, saturate(uniforms.dt * 4.0));
     }
