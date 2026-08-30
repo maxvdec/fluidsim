@@ -117,6 +117,7 @@ struct FloatField: View {
 
 struct ParametersView: View {
     @Binding var settings: SimulationSettings
+    @State private var wantsMouse: Bool = false
 
     var body: some View {
         HStack {
@@ -183,6 +184,12 @@ struct ParametersView: View {
             Toggle(isOn: $settings.randomScattering) {
                 Text("Scatter randomly")
             }
+            Divider()
+            FloatField("Mouse Radius", value: $settings.mouseRadius, unit: "")
+            FloatField("Mouse Strength", value: $settings.mouseStrength, unit: "")
+            Toggle(isOn: $wantsMouse) {
+                Text("Mouse Activated")
+            }
             
             
             
@@ -195,6 +202,13 @@ struct ParametersView: View {
                 } else {
                     Image(systemName: "pause")
                 }
+            }
+        }
+        .onChange(of: wantsMouse) {
+            if (wantsMouse == true) {
+                settings.mouseStrength = 20.0
+            } else {
+                settings.mouseStrength = 0.0
             }
         }
     }

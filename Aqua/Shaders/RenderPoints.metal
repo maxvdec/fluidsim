@@ -42,6 +42,18 @@ fragment float4 particleFragment(
     if (length(centered) > 1.0) {
         discard_fragment();
     }
+    
+    float mouseDistance = distance(
+          in.siPosition,
+          uniforms.mousePosition
+      );
+
+      if (
+          uniforms.mouseMode != 0 &&
+          mouseDistance < uniforms.mouseRadius
+      ) {
+          return float4(1.0, 0.0, 1.0, 1.0); // MAGENTA
+      }
 
     float maxSpeed = 5.0;
     float t = clamp(in.speed / maxSpeed, 0.0, 1.0);

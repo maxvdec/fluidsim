@@ -39,14 +39,18 @@ final class SimulationSettings {
     var viscosityStrength: Float = 0.5
     var nearPressureMultiplier: Float = 0.1
     var particleMass: Float = 2.0
+    
+    var mouseStrength: Float = 200.0
+    var mouseRadius: Float = 1.2
 }
 
 struct MetalView: NSViewRepresentable {
     let renderer: Renderer
     
-    func makeNSView(context: Context) -> MTKView {
-        let view = MTKView(frame: .zero, device: renderer.device)
+    func makeNSView(context: Context) -> SimulationMTKView {
+        let view = SimulationMTKView()
         
+        view.device = renderer.device
         view.delegate = renderer
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
@@ -56,10 +60,34 @@ struct MetalView: NSViewRepresentable {
         view.enableSetNeedsDisplay = false
         view.isPaused = false
         
+        view.onLeftMouseDown = { point in
+            renderer.beginMouseInteraction(at: point, in: view, mode: .repel)
+        }
+        
+        view.onLeftMouseDragged = { point in
+            renderer.updateMouseInteraction(at: point, in: view)
+        }
+        
+        view.onLeftMouseUp = {
+            renderer.endMouseInteraction()
+        }
+        
+        view.onRightMouseDown = { point in
+            renderer.beginMouseInteraction(at: point, in: view, mode: .grab)
+        }
+        
+        view.onRightMouseDragged = { point in
+            renderer.updateMouseInteraction(at: point, in: view)
+        }
+        
+        view.onRightMouseUp = {
+            renderer.endMouseInteraction()
+        }
+        
         return view
     }
     
-    func updateNSView(_ nsView: MTKView, context: Context) {}
+    func updateNSView(_ nsView: SimulationMTKView, context: Context) {}
 }
 
 func createParticlesInGrid(n: Int, spacing: Float = 0.1) -> [Particle] {
@@ -211,6 +239,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     
     private var lastRandomScattering: Bool = false
     
+    private var mouseInteractionState: MouseInteractionState = .init()
+    
     init(settings: SimulationSettings) {
         self.settings = settings
         
@@ -298,6 +328,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.pressureMultiplier = settings.pressureMultiplier
         uniforms.viscosityStrength = settings.viscosityStrength
         uniforms.nearPressureMultiplier = settings.nearPressureMultiplier
+        
+        updateMouseInteractionForFrame(dt: uniforms.dt)
+        
+        uniforms.mousePosition = mouseInteractionState.currentSimPosition
+        uniforms.mouseVelocity = mouseInteractionState.simVelocity
+        uniforms.mouseRadius = settings.mouseRadius
+        uniforms.mouseStrength = settings.mouseStrength
+        uniforms.mouseMode = mouseInteractionState.isActive ? mouseInteractionState.mode.rawValue : MouseMode.none.rawValue
         
         if settings.paused {
             bounds.assign(new: createBounds(settings: settings))
@@ -655,4 +693,71 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
     
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    
+    func screenToSimulation(
+        point: CGPoint,
+        in view: MTKView
+    ) -> SIMD2<Float> {
+        guard view.bounds.width > 0, view.bounds.height > 0 else {
+            return .zero
+        }
+
+        let normalizedX = Float((point.x - view.bounds.minX) / view.bounds.width)
+        let normalizedY = view.isFlipped
+            ? Float((view.bounds.maxY - point.y) / view.bounds.height)
+            : Float((point.y - view.bounds.minY) / view.bounds.height)
+        let viewportSize = SIMD2<Float>(
+            Float(view.drawableSize.width),
+            Float(view.drawableSize.height)
+        )
+        let pixelPosition = SIMD2<Float>(
+            normalizedX * viewportSize.x,
+            normalizedY * viewportSize.y
+        )
+        let boundaryViewportScale = max(0.01, 1.0 - settings.boundaryViewportPadding / 50.0)
+        let ppm = min(viewportSize.x / settings.boundsX, viewportSize.y / settings.boundsY) * boundaryViewportScale
+
+        return (pixelPosition - viewportSize * 0.5) / ppm
+    }
+    
+    func beginMouseInteraction(at point: CGPoint, in view: MTKView, mode: MouseMode) {
+        let simPos = screenToSimulation(point: point, in: view)
+        
+        mouseInteractionState.isActive = true
+        mouseInteractionState.mode = mode
+        mouseInteractionState.currentSimPosition = simPos
+        mouseInteractionState.previousSimPosition = simPos
+        mouseInteractionState.simVelocity = .zero
+    }
+    
+    func updateMouseInteraction(at point: CGPoint, in view: MTKView) {
+        let simPos = screenToSimulation(point: point, in: view)
+        mouseInteractionState.currentSimPosition = simPos
+    }
+    
+    func endMouseInteraction() {
+        mouseInteractionState.isActive = false
+        mouseInteractionState.mode = .none
+        mouseInteractionState.simVelocity = .zero
+    }
+    
+    func updateMouseInteractionForFrame(dt: Float) {
+        guard mouseInteractionState.isActive else {
+            mouseInteractionState.simVelocity = .zero
+            return
+        }
+        
+        let velocity = (mouseInteractionState.currentSimPosition - mouseInteractionState.previousSimPosition) / max(0.0001, dt)
+        
+        var clampedVelocity = velocity
+        let maxSpeed: Float = 15.0
+        let speed = simd_length(clampedVelocity)
+        
+        if speed > maxSpeed {
+            clampedVelocity *= maxSpeed / speed
+        }
+        
+        mouseInteractionState.simVelocity = clampedVelocity
+        mouseInteractionState.previousSimPosition = mouseInteractionState.currentSimPosition
+    }
 }

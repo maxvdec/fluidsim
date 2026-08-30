@@ -40,6 +40,12 @@ struct Uniforms {
     float particleMass;
 
     unsigned int spatialEntryCount;
+    
+    simd_float2 mousePosition;
+    simd_float2 mouseVelocity;
+    float mouseRadius;
+    float mouseStrength;
+    unsigned int mouseMode; // 0 (none), 1 (repel), 2 (grab)
 };
 
 struct SpatialLookupEntry {

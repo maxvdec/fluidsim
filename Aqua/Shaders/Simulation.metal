@@ -199,7 +199,33 @@ kernel void simulateParticles(
             p.velocity *= maxSpeed / speed;
         }
     }
-
+    
+    // Create mouse interactions
+    float2 offset = p.position - uniforms.mousePosition;
+    float dist = length(offset);
+    
+    if (uniforms.mouseMode != 0 && dist < uniforms.mouseRadius) {
+        float influence = 1.0 - (dist / uniforms.mouseRadius);
+        influence *= influence;
+        
+        float2 dir = (dist > 0.0001) ? (offset / dist) : float2(0.0);
+        
+        // Push
+        if (uniforms.mouseMode == 1) {
+            float2 radialPush = dir * uniforms.mouseStrength;
+            float2 sweepPush = uniforms.mouseVelocity * 2.0;
+            
+            p.velocity += (radialPush + sweepPush) * influence * uniforms.dt;
+        }
+        // Grab
+        else if (uniforms.mouseMode == 2) {
+            float2 toMouse = uniforms.mousePosition - p.position;
+            float2 desiredVelocity = toMouse * 8.0 + uniforms.mouseVelocity;
+            
+            p.velocity += (desiredVelocity - p.velocity) * uniforms.mouseStrength * influence * uniforms.dt;
+        }
+    }
+    
     p.position += p.velocity * uniforms.dt;
 
     float2 bounds = uniforms.bounds;
