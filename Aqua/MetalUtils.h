@@ -73,8 +73,8 @@ inline float densityToPressure(float density, float targetDensity, float pressur
 }
 
 inline float calculateSharedPressure(float densityA, float densityB, float targetDensity, float pressureMultiplier) {
-    float pressureA = densityToPressure(densityA, targetDensity, pressureMultiplier);
-    float pressureB = densityToPressure(densityB, targetDensity, pressureMultiplier);
+    float pressureA = max(0.0, densityToPressure(densityA, targetDensity, pressureMultiplier));
+    float pressureB = max(0.0, densityToPressure(densityB, targetDensity, pressureMultiplier));
     return (pressureA + pressureB) / 2;
 }
 

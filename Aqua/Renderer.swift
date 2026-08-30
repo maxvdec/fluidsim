@@ -17,15 +17,15 @@ import SwiftUI
 final class SimulationSettings {
     var paused = true
     
-    var gravity: Float = 0.00 // m/s^2
+    var gravity: Float = 9.81 // m/s^2
     var particleRadius: Float = 0.025 // m
     
     var ppm: Float = 20
     
     var timeScale: Float = 1.0
     
-    var boundsX: Float = 20.0 // m
-    var boundsY: Float = 10.0 // m
+    var boundsX: Float = 40.0 // m
+    var boundsY: Float = 20.0 // m
     var boundaryViewportPadding: Float = 10.0
     
     var particles: Int = 10000
@@ -35,7 +35,7 @@ final class SimulationSettings {
     var smoothingRadius: Float = 0.5 // m
     
     var targetDensity: Float = 100.0
-    var pressureMultiplier: Float = 1000.0
+    var pressureMultiplier: Float = 500.0
     var viscosityStrength: Float = 0.5
     var nearPressureMultiplier: Float = 0.1
     var particleMass: Float = 2.0
@@ -92,19 +92,21 @@ struct MetalView: NSViewRepresentable {
 
 func createParticlesInGrid(n: Int, settings: SimulationSettings, spacing: Float = 0.1) -> [Particle] {
     let aspectRatio = max(0.0001, Double(settings.boundsX / settings.boundsY))
-    let rows = min(n, max(1, Int(ceil(sqrt(Double(n) / aspectRatio)))))
-    let baseColumns = n / rows
-    let extraColumns = n % rows
+    let columns = min(n, max(1, Int(round(sqrt(Double(n) * aspectRatio)))))
+    let rows = Int(ceil(Double(n) / Double(columns)))
     
     var positions: [SIMD2<Float>] = []
     positions.reserveCapacity(n)
     
     for yIndex in 0 ..< rows {
-        let columns = baseColumns + (yIndex < extraColumns ? 1 : 0)
+        let firstIndex = yIndex * columns
+        let rowCount = min(columns, n - firstIndex)
+        let rowOffset = (columns - rowCount) / 2
         let y = (Float(yIndex) - Float(rows - 1) / 2.0) * spacing
 
-        for xIndex in 0 ..< columns {
-            let x = (Float(xIndex) - Float(columns - 1) / 2.0) * spacing
+        for xIndex in 0 ..< rowCount {
+            let gridX = rowOffset + xIndex
+            let x = (Float(gridX) - Float(columns - 1) / 2.0) * spacing
             positions.append(SIMD2<Float>(x, y))
         }
     }

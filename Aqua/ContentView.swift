@@ -67,17 +67,20 @@ struct FloatField: View {
 
     let title: String
     let unit: String
+    let isZeroPermitted: Bool
 
     @State private var text: String = ""
 
     init(
         _ title: String,
         value: Binding<Float>,
-        unit: String
+        unit: String,
+        isZeroPermitted: Bool = false
     ) {
         self.title = title
         self._value = value
         self.unit = unit
+        self.isZeroPermitted = isZeroPermitted
     }
 
     var body: some View {
@@ -92,6 +95,9 @@ struct FloatField: View {
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: text) { _, newValue in
                     if let number = Float(newValue) {
+                        if number == 0 && !isZeroPermitted {
+                            return
+                        }
                         value = number
                     }
                 }
@@ -142,7 +148,7 @@ struct ParametersView: View {
                 .font(.largeTitle)
                 .bold()
 
-            FloatField("Gravity", value: $settings.gravity, unit: "m/s2")
+            FloatField("Gravity", value: $settings.gravity, unit: "m/s2", isZeroPermitted: true)
             HStack {
                 Text("Smoothing Radius: ")
                 Slider(value: $settings.smoothingRadius, in: 0.1 ... 10.0)

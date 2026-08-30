@@ -238,12 +238,12 @@ kernel void simulateParticles(
     
     if (uniforms.mouseMode != 0 && dist < uniforms.mouseRadius) {
         float influence = 1.0 - (dist / uniforms.mouseRadius);
-        influence *= influence;
         
         float2 dir = (dist > 0.0001) ? (offset / dist) : float2(0.0);
         
         // Push
         if (uniforms.mouseMode == 1) {
+            influence *= influence;
             float2 radialPush = dir * uniforms.mouseStrength;
             float2 sweepPush = uniforms.mouseVelocity * 2.0;
             
@@ -251,10 +251,13 @@ kernel void simulateParticles(
         }
         // Grab
         else if (uniforms.mouseMode == 2) {
-            float2 toMouse = uniforms.mousePosition - p.position;
-            float2 desiredVelocity = toMouse * 8.0 + uniforms.mouseVelocity;
-            
-            p.velocity += (desiredVelocity - p.velocity) * uniforms.mouseStrength * influence * uniforms.dt;
+            float bowlRadius = uniforms.mouseRadius * 0.7;
+            float containmentDistance = max(0.0, dist - bowlRadius);
+            float2 containmentVelocity = -dir * containmentDistance * 6.0;
+            float2 desiredVelocity = uniforms.mouseVelocity + containmentVelocity;
+            float response = 1.0 - exp(-max(0.0, uniforms.mouseStrength) * influence * uniforms.dt);
+
+            p.velocity = mix(p.velocity, desiredVelocity, response);
         }
     }
     
