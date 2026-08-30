@@ -53,6 +53,19 @@ inline float smoothingKernelDerivative(float radius, float dst) {
     return (dst - radius) * scale;
 }
 
+inline float nearDensityKernel(float radius, float dst) {
+    if (dst >= radius) return 0;
+    float volume = PI * pow(radius, 5) / 10;
+    float value = radius - dst;
+    return value * value * value / volume;
+}
+
+inline float nearDensityKernelDerivative(float radius, float dst) {
+    if (dst >= radius) return 0;
+    float value = radius - dst;
+    return -30 * value * value / (PI * pow(radius, 5));
+}
+
 inline float densityToPressure(float density, float targetDensity, float pressureMultiplier) {
     float densityError = density - targetDensity;
     float pressure = densityError * pressureMultiplier;
@@ -62,6 +75,12 @@ inline float densityToPressure(float density, float targetDensity, float pressur
 inline float calculateSharedPressure(float densityA, float densityB, float targetDensity, float pressureMultiplier) {
     float pressureA = max(0.0, densityToPressure(densityA, targetDensity, pressureMultiplier));
     float pressureB = max(0.0, densityToPressure(densityB, targetDensity, pressureMultiplier));
+    return (pressureA + pressureB) / 2;
+}
+
+inline float calculateSharedNearPressure(float nearDensityA, float nearDensityB, float nearPressureMultiplier) {
+    float pressureA = nearDensityA * nearPressureMultiplier;
+    float pressureB = nearDensityB * nearPressureMultiplier;
     return (pressureA + pressureB) / 2;
 }
 

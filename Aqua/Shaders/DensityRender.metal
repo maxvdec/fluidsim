@@ -17,7 +17,6 @@ float calculateDensityForPass(
     float2 samplePos,
     constant Uniforms& uniforms
 ) {
-    const float mass = 1.0;
     float density = 0.0;
 
     int2 sampleCell = getCell2D(samplePos, uniforms.smoothingRadius);
@@ -37,7 +36,7 @@ float calculateDensityForPass(
 
             if (all(getCell2D(p.predictedPosition, uniforms.smoothingRadius) == cell)) {
                 float dst = length(p.predictedPosition - samplePos);
-                density += mass * smoothingKernel(uniforms.smoothingRadius, dst);
+                density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, dst);
             }
 
             entryIndex++;

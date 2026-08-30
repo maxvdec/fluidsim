@@ -17,19 +17,19 @@ import SwiftUI
 final class SimulationSettings {
     var paused = true
     
-    var gravity: Float = 9.81 // m/s^2
+    var gravity: Float = 0.00 // m/s^2
     var particleRadius: Float = 0.025 // m
     
     var ppm: Float = 20
     
     var timeScale: Float = 1.0
     
-    var boundsX: Float = 5.0 // m
-    var boundsY: Float = 3.0 // m
+    var boundsX: Float = 20.0 // m
+    var boundsY: Float = 10.0 // m
     var boundaryViewportPadding: Float = 10.0
     
-    var particles: Int = 600
-    var particleSpacing: Float = 0.1
+    var particles: Int = 10000
+    var particleSpacing: Float = 0.07
     var randomScattering: Bool = false
     
     var smoothingRadius: Float = 0.2 // m
@@ -37,6 +37,8 @@ final class SimulationSettings {
     var targetDensity: Float = 100.0
     var pressureMultiplier: Float = 50.0
     var viscosityStrength: Float = 0.5
+    var nearPressureMultiplier: Float = 0.1
+    var particleMass: Float = 2.0
 }
 
 struct MetalView: NSViewRepresentable {
@@ -48,6 +50,7 @@ struct MetalView: NSViewRepresentable {
         view.delegate = renderer
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
+        view.sampleCount = 4
         
         view.preferredFramesPerSecond = 60
         view.enableSetNeedsDisplay = false
@@ -77,7 +80,7 @@ func createParticlesInGrid(n: Int, spacing: Float = 0.1) -> [Particle] {
     }
     
     return positions.map { pos in
-        Particle(position: pos, predictedPosition: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0)
+        Particle(position: pos, predictedPosition: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0, nearDensity: 0.0)
     }
 }
 
@@ -95,7 +98,7 @@ func scatterParticlesRandomly(n: Int, settings: SimulationSettings) -> [Particle
     }
     
     return positions.map { pos in
-        Particle(position: pos, predictedPosition: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0)
+        Particle(position: pos, predictedPosition: pos, velocity: SIMD2<Float>(0.0, 0.0), density: 0.0, nearDensity: 0.0)
     }
 }
 
@@ -119,6 +122,7 @@ func createRenderPipeline(vertex: String, fragment: String, device: MTLDevice) t
     descriptor.vertexFunction = vertexFunction
     descriptor.fragmentFunction = fragmentFunction
     descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+    descriptor.rasterSampleCount = 4
     
     return try device.makeRenderPipelineState(descriptor: descriptor)
 }
@@ -293,6 +297,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.targetDensity = settings.targetDensity
         uniforms.pressureMultiplier = settings.pressureMultiplier
         uniforms.viscosityStrength = settings.viscosityStrength
+        uniforms.nearPressureMultiplier = settings.nearPressureMultiplier
         
         if settings.paused {
             bounds.assign(new: createBounds(settings: settings))
@@ -315,6 +320,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         uniforms.particleCount = UInt32(particles.count)
         uniforms.spatialEntryCount = UInt32(lookupEntries.count)
+        uniforms.particleMass = max(settings.particleMass, 0.0001)
     }
 
     private func updateDensityTextureSize() {
@@ -553,32 +559,32 @@ final class Renderer: NSObject, MTKViewDelegate {
             return
         }
         
-        encoder.setRenderPipelineState(
-            densityDisplayPipeline
-        )
-
-        encoder.setVertexBytes(
-            &uniforms,
-            length: MemoryLayout<Uniforms>.stride,
-            index: 1
-        )
-
-        encoder.setFragmentTexture(
-            densityTexture,
-            index: 0
-        )
-
-        encoder.setFragmentBytes(
-            &uniforms,
-            length: MemoryLayout<Uniforms>.stride,
-            index: 1
-        )
-
-        encoder.drawPrimitives(
-            type: .triangle,
-            vertexStart: 0,
-            vertexCount: 6
-        )
+//        encoder.setRenderPipelineState(
+//            densityDisplayPipeline
+//        )
+//
+//        encoder.setVertexBytes(
+//            &uniforms,
+//            length: MemoryLayout<Uniforms>.stride,
+//            index: 1
+//        )
+//
+//        encoder.setFragmentTexture(
+//            densityTexture,
+//            index: 0
+//        )
+//
+//        encoder.setFragmentBytes(
+//            &uniforms,
+//            length: MemoryLayout<Uniforms>.stride,
+//            index: 1
+//        )
+//
+//        encoder.drawPrimitives(
+//            type: .triangle,
+//            vertexStart: 0,
+//            vertexCount: 6
+//        )
         
         encoder.setRenderPipelineState(renderPipeline)
         

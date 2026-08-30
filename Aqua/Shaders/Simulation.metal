@@ -10,15 +10,15 @@
 #include "../MetalUtils.h"
 using namespace metal;
 
-float calculateDensity(
+float2 calculateDensitiesAtPosition(
     device const Particle *particles,
     device const SpatialLookupEntry *lookupEntries,
     device const uint *cellStartIndices,
     float2 samplePos,
     constant Uniforms& uniforms
 ) {
-    const float mass = 1.0;
     float density = 0.0;
+    float nearDensity = 0.0;
 
     int2 sampleCell = getCell2D(samplePos, uniforms.smoothingRadius);
 
@@ -37,14 +37,15 @@ float calculateDensity(
 
             if (all(getCell2D(p.predictedPosition, uniforms.smoothingRadius) == cell)) {
                 float dst = length(p.predictedPosition - samplePos);
-                density += mass * smoothingKernel(uniforms.smoothingRadius, dst);
+                density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, dst);
+                nearDensity += uniforms.particleMass * nearDensityKernel(uniforms.smoothingRadius, dst);
             }
 
             entryIndex++;
         }
     }
 
-    return density;
+    return float2(density, nearDensity);
 }
 
 float2 calculatePressureForce(
@@ -53,9 +54,9 @@ float2 calculatePressureForce(
     device const uint *cellStartIndices,
     float2 samplePos,
     float sampleDensity,
+    float sampleNearDensity,
     constant Uniforms& uniforms
 ) {
-    const float mass = 1.0;
     float2 pressureForce = float2(0.0, 0.0);
 
     int2 sampleCell = getCell2D(samplePos, uniforms.smoothingRadius);
@@ -80,9 +81,14 @@ float2 calculatePressureForce(
                 if (dst > 0.0001 && dst < uniforms.smoothingRadius) {
                     float2 dir = offset / dst;
                     float slope = smoothingKernelDerivative(uniforms.smoothingRadius, dst);
+                    float nearSlope = nearDensityKernelDerivative(uniforms.smoothingRadius, dst);
                     float neighborDensity = max(p.density, 0.0001);
                     float sharedPressure = calculateSharedPressure(sampleDensity, neighborDensity, uniforms.targetDensity, uniforms.pressureMultiplier);
-                    pressureForce += sharedPressure * dir * slope * mass / neighborDensity;
+                    float sharedNearPressure = calculateSharedNearPressure(sampleNearDensity, p.nearDensity, uniforms.nearPressureMultiplier);
+                    pressureForce += (
+                        sharedPressure * slope
+                        + sharedNearPressure * nearSlope
+                    ) * dir * uniforms.particleMass / neighborDensity;
                 }
             }
 
@@ -101,7 +107,6 @@ float2 calculateViscosityAcceleration(
     float2 sampleVelocity,
     constant Uniforms& uniforms
 ) {
-    const float mass = 1.0;
     float2 viscosityAcceleration = float2(0.0);
     int2 sampleCell = getCell2D(samplePos, uniforms.smoothingRadius);
 
@@ -124,7 +129,7 @@ float2 calculateViscosityAcceleration(
                 if (dst > 0.0001 && dst < uniforms.smoothingRadius) {
                     float influence = smoothingKernel(uniforms.smoothingRadius, dst);
                     float neighborDensity = max(p.density, 0.0001);
-                    viscosityAcceleration += (p.velocity - sampleVelocity) * influence * mass / neighborDensity;
+                    viscosityAcceleration += (p.velocity - sampleVelocity) * influence * uniforms.particleMass / neighborDensity;
                 }
             }
 
@@ -170,6 +175,7 @@ kernel void simulateParticles(
         cellStartIndices,
         p.predictedPosition,
         density,
+        p.nearDensity,
         uniforms
     );
     float2 viscosityAcceleration = calculateViscosityAcceleration(
@@ -230,13 +236,15 @@ kernel void calculateDensities(
     }
     Particle p = particles[id];
 
-    p.density = calculateDensity(
+    float2 densities = calculateDensitiesAtPosition(
         particles,
         lookupEntries,
         cellStartIndices,
         p.predictedPosition,
         uniforms
     );
+    p.density = densities.x;
+    p.nearDensity = densities.y;
 
     outputParticles[id] = p;
 }
