@@ -69,6 +69,7 @@ final class SimulationSettings {
     var densityResolution: Int = 128
 
     var stepSize: Float = 0.025
+    var lightStepSize: Float = 0.1
     var densityMultiplier: Float = 0.00008
     var isoLevel: Float = 155.0
     
@@ -78,9 +79,7 @@ final class SimulationSettings {
     
     var brightnessMultiplier: Float = 1.15
     var waterIOR: Float = 1.333
-    var surfaceRoughness: Float = 0.012
-    var surfaceDetailStrength: Float = 0.16
-    var surfaceDetailScale: Float = 5.5
+    var surfaceRoughness: Float = 0.0
 
     var showBounds = false
 
@@ -95,12 +94,17 @@ final class SimulationSettings {
     var colliderSizeZ: Float = 2.2
 
     var foamEnabled = true
-    var foamThreshold: Float = 2.5
-    var foamIntensity: Float = 22.0
-    var foamScale: Float = 0.085
+    var foamSpawnRate: Float = 70.0
+    var foamVelocityMin: Float = 5.0
+    var foamVelocityMax: Float = 25.0
+    var foamKineticMin: Float = 15.0
+    var foamKineticMax: Float = 80.0
+    var foamScale: Float = 0.025
     var sprayEnabled = true
-    var sprayIntensity: Float = 1.0
-    var sprayScale: Float = 0.62
+    var sprayMaxNeighbours: Int = 5
+    var bubbleMinNeighbours: Int = 15
+    var bubbleBuoyancy: Float = 1.5
+    var bubbleScale: Float = 0.5
 }
 
 struct MetalView: NSViewRepresentable {
@@ -494,7 +498,9 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     private let densityCalculationPipeline: MTLComputePipelineState
     private let simulationPipeline: MTLComputePipelineState
-    private let densityRenderPipeline: MTLComputePipelineState
+    private let densityClearPipeline: MTLComputePipelineState
+    private let densitySplatPipeline: MTLComputePipelineState
+    private let densityResolvePipeline: MTLComputePipelineState
     private let predictionPipeline: MTLComputePipelineState
     private let spatialClearPipeline: MTLComputePipelineState
     private let spatialLinkedListPipeline: MTLComputePipelineState
@@ -519,6 +525,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var cellStartIndices: MTLSyncBuffer<UInt32>
     private var foamParticles: MTLSyncBuffer<FoamParticle>
     private var foamCounter: MTLSyncBuffer<UInt32>
+    private var densityAccumulation: MTLSyncBuffer<UInt32>
 
     private var uniforms: Uniforms = .init()
     private let simulationSubsteps = 2
@@ -533,7 +540,6 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastSpawnJitter: Float = .nan
     private var lastDensityConfiguration: [Float] = []
     private var densityVolumeDirty = true
-    private var frameIndex: UInt64 = 0
     private var floatingColliderY: Float = 0.0
     private var floatingColliderVelocity: Float = 0.0
     private var wasColliderFloating = false
@@ -542,7 +548,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     private var camera: Camera
     
-    private let renderScale: CGFloat = 0.7
+    private let renderScale: CGFloat = 0.6
 
     init(settings: SimulationSettings) {
         self.settings = settings
@@ -569,8 +575,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         let simulationFunction = library.makeFunction(name: "simulateParticles")!
         self.simulationPipeline = try! device.makeComputePipelineState(function: simulationFunction)
 
-        let densityRenderFunction = library.makeFunction(name: "renderDensity")!
-        self.densityRenderPipeline = try! device.makeComputePipelineState(function: densityRenderFunction)
+        let densityClearFunction = library.makeFunction(name: "clearDensityAccumulation")!
+        self.densityClearPipeline = try! device.makeComputePipelineState(function: densityClearFunction)
+
+        let densitySplatFunction = library.makeFunction(name: "splatDensity")!
+        self.densitySplatPipeline = try! device.makeComputePipelineState(function: densitySplatFunction)
+
+        let densityResolveFunction = library.makeFunction(name: "resolveDensity")!
+        self.densityResolvePipeline = try! device.makeComputePipelineState(function: densityResolveFunction)
 
         let predictionFunction = library.makeFunction(name: "predictPositions")!
         self.predictionPipeline = try! device.makeComputePipelineState(function: predictionFunction)
@@ -618,14 +630,25 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         self.depthStencilState = depthState
 
+        let initialDensityResolution = densityResolution(
+            maxResolution: settings.densityResolution,
+            bounds: SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ)
+        )
         let initialParticles = createParticles(n: max(1, settings.particles), wantsRandom: settings.randomScattering, settings: settings)
         self.particles = MTLSyncBuffer(device: device, values: initialParticles)
         self.nextParticles = MTLSyncBuffer(device: device, values: initialParticles)
         self.bounds = MTLSyncBuffer(device: device, values: createBounds(settings: settings))
         self.particleNextIndices = MTLSyncBuffer(device: device, values: createCellStartIndices(particleCount: initialParticles.count))
         self.cellStartIndices = MTLSyncBuffer(device: device, values: createCellStartIndices(particleCount: initialParticles.count))
-        self.foamParticles = MTLSyncBuffer(device: device, values: createFoamParticles(count: 8192))
+        self.foamParticles = MTLSyncBuffer(device: device, values: createFoamParticles(count: 16384))
         self.foamCounter = MTLSyncBuffer(device: device, values: [0])
+        self.densityAccumulation = MTLSyncBuffer(
+            device: device,
+            values: Array(
+                repeating: 0,
+                count: initialDensityResolution.x * initialDensityResolution.y * initialDensityResolution.z
+            )
+        )
 
         self.lastRandomScattering = settings.randomScattering
         self.lastParticleSpacing = settings.particleSpacing
@@ -638,10 +661,6 @@ final class Renderer: NSObject, MTKViewDelegate {
             settings.boundsZ
         )
 
-        let initialDensityResolution = densityResolution(
-            maxResolution: settings.densityResolution,
-            bounds: SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ)
-        )
         self.densityTexture = createDensityTexture(
             device: device,
             width: initialDensityResolution.x,
@@ -722,8 +741,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         updateDensityTextureSize()
         uniforms.bounds = SIMD3<Float>(settings.boundsX, settings.boundsY, settings.boundsZ)
         uniforms.smoothingRadius = settings.smoothingRadius
+        uniforms.densityResolution = SIMD3<UInt32>(
+            UInt32(densityTexture.width),
+            UInt32(densityTexture.height),
+            UInt32(densityTexture.depth)
+        )
         
         uniforms.stepSize = settings.stepSize
+        uniforms.lightStepSize = max(settings.lightStepSize, settings.stepSize)
         uniforms.densityMultiplier = settings.densityMultiplier
         uniforms.isoLevel = settings.isoLevel
         
@@ -733,16 +758,20 @@ final class Renderer: NSObject, MTKViewDelegate {
         uniforms.brightnessMultiplier = settings.brightnessMultiplier
         uniforms.waterIOR = max(settings.waterIOR, 1.0001)
         uniforms.surfaceRoughness = max(settings.surfaceRoughness, 0.0)
-        uniforms.surfaceDetailStrength = max(settings.surfaceDetailStrength, 0.0)
-        uniforms.surfaceDetailScale = max(settings.surfaceDetailScale, 0.01)
         uniforms.foamEnabled = settings.foamEnabled ? 1 : 0
-        uniforms.foamThreshold = max(settings.foamThreshold, 0.0)
-        uniforms.foamIntensity = max(settings.foamIntensity, 0.0)
+        uniforms.foamDeltaTime = settings.paused ? 0.0 : min(dt, 1.0 / 30.0) * settings.timeScale
+        uniforms.foamSpawnRate = max(settings.foamSpawnRate, 0.0)
+        uniforms.foamVelocityMin = max(settings.foamVelocityMin, 0.0)
+        uniforms.foamVelocityMax = max(settings.foamVelocityMax, uniforms.foamVelocityMin + 0.001)
+        uniforms.foamKineticMin = max(settings.foamKineticMin, 0.0)
+        uniforms.foamKineticMax = max(settings.foamKineticMax, uniforms.foamKineticMin + 0.001)
         uniforms.foamScale = max(settings.foamScale, 0.01)
         uniforms.foamParticleCapacity = UInt32(foamParticles.count)
         uniforms.sprayEnabled = settings.sprayEnabled ? 1 : 0
-        uniforms.sprayIntensity = max(settings.sprayIntensity, 0.0)
-        uniforms.sprayScale = max(settings.sprayScale, 0.05)
+        uniforms.sprayMaxNeighbours = UInt32(max(settings.sprayMaxNeighbours, 0))
+        uniforms.bubbleMinNeighbours = UInt32(max(settings.bubbleMinNeighbours, settings.sprayMaxNeighbours + 1))
+        uniforms.bubbleBuoyancy = settings.bubbleBuoyancy
+        uniforms.bubbleScale = max(settings.bubbleScale, 0.01)
 
         uniforms.colliderEnabled = settings.colliderEnabled ? 1 : 0
         uniforms.colliderCollisions = settings.colliderCollisions ? 1 : 0
@@ -894,6 +923,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             width: resolution.x,
             height: resolution.y,
             depth: resolution.z
+        )
+        densityAccumulation.assign(
+            new: Array(repeating: 0, count: resolution.x * resolution.y * resolution.z)
         )
     }
 
@@ -1107,60 +1139,49 @@ final class Renderer: NSObject, MTKViewDelegate {
     func encodeDensityPass(
         _ commandBuffer: MTLCommandBuffer
     ) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        guard let clearEncoder = commandBuffer.makeComputeCommandEncoder() else {
             return
         }
-
-        encoder.label = "Density Compute Pass"
-
-        encoder.setComputePipelineState(densityRenderPipeline)
-
-        particles.setAtEncoder(encoder, index: 0)
-        particleNextIndices.setAtEncoder(encoder, index: 1)
-        cellStartIndices.setAtEncoder(encoder, index: 2)
-
-        encoder.setBytes(
-            &uniforms,
-            length: MemoryLayout<Uniforms>.stride,
-            index: 3
+        clearEncoder.label = "Clear Density Volume"
+        clearEncoder.setComputePipelineState(densityClearPipeline)
+        densityAccumulation.setAtEncoder(clearEncoder, index: 0)
+        clearEncoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+        let clearWidth = densityClearPipeline.threadExecutionWidth
+        clearEncoder.dispatchThreads(
+            MTLSize(width: densityAccumulation.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: clearWidth, height: 1, depth: 1)
         )
+        clearEncoder.endEncoding()
 
-        encoder.setTexture(
-            densityTexture,
-            index: 0
+        guard let splatEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            return
+        }
+        splatEncoder.label = "Splat Particle Density"
+        splatEncoder.setComputePipelineState(densitySplatPipeline)
+        particles.setAtEncoder(splatEncoder, index: 0)
+        densityAccumulation.setAtEncoder(splatEncoder, index: 1)
+        splatEncoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
+        let splatWidth = densitySplatPipeline.threadExecutionWidth
+        splatEncoder.dispatchThreads(
+            MTLSize(width: particles.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: splatWidth, height: 1, depth: 1)
         )
+        splatEncoder.endEncoding()
 
-        let maxThreads = densityRenderPipeline.maxTotalThreadsPerThreadgroup
-
-        let threadWidth = 8
-        let threadHeight = 8
-        let threadDepth = max(
-            1,
-            min(
-                4,
-                maxThreads /
-                    (threadWidth * threadHeight)
-            )
+        guard let resolveEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            return
+        }
+        resolveEncoder.label = "Resolve Density Volume"
+        resolveEncoder.setComputePipelineState(densityResolvePipeline)
+        densityAccumulation.setAtEncoder(resolveEncoder, index: 0)
+        resolveEncoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+        resolveEncoder.setTexture(densityTexture, index: 0)
+        let resolveWidth = densityResolvePipeline.threadExecutionWidth
+        resolveEncoder.dispatchThreads(
+            MTLSize(width: densityAccumulation.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: resolveWidth, height: 1, depth: 1)
         )
-
-        let threadsPerGroup = MTLSize(
-            width: threadWidth,
-            height: threadHeight,
-            depth: threadDepth
-        )
-
-        let threads = MTLSize(
-            width: densityTexture.width,
-            height: densityTexture.height,
-            depth: densityTexture.depth
-        )
-
-        encoder.dispatchThreads(
-            threads,
-            threadsPerThreadgroup: threadsPerGroup
-        )
-
-        encoder.endEncoding()
+        resolveEncoder.endEncoding()
     }
 
     private func encodeRendering(_ commandBuffer: MTLCommandBuffer, descriptor: MTLRenderPassDescriptor) {
@@ -1236,8 +1257,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         let dt = calculateDeltaTime()
 
         uniforms.time += min(dt, 1.0 / 15.0)
-        frameIndex &+= 1
-
         updateUniforms(
             view: view,
             dt: dt
@@ -1267,14 +1286,12 @@ final class Renderer: NSObject, MTKViewDelegate {
                 encodeDensityCalculation(commandBuffer)
 
                 encodeSimulation(commandBuffer)
-                if settings.foamEnabled {
-                    encodeFoamUpdate(commandBuffer)
-                }
             }
-            if frameIndex.isMultiple(of: 2) || densityVolumeDirty {
-                encodeDensityPass(commandBuffer)
-                densityVolumeDirty = false
+            if settings.foamEnabled {
+                encodeFoamUpdate(commandBuffer)
             }
+            encodeDensityPass(commandBuffer)
+            densityVolumeDirty = false
         }
 
         encodeFinalRender(commandBuffer)

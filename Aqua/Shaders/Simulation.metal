@@ -178,6 +178,21 @@ inline float randomValue(thread uint &state) {
     return float(nextRandom(state)) / 4294967295.0;
 }
 
+inline float remap01(float value, float minimum, float maximum) {
+    return saturate((value - minimum) / max(maximum - minimum, 0.000001));
+}
+
+inline float3 orthonormal(float3 direction) {
+    if (dot(direction, direction) < 0.00000001) {
+        return float3(1.0, 0.0, 0.0);
+    }
+    float3 normalizedDirection = normalize(direction);
+    float3 reference = abs(normalizedDirection.y) < 0.99
+        ? float3(0.0, 1.0, 0.0)
+        : float3(1.0, 0.0, 0.0);
+    return normalize(cross(normalizedDirection, reference));
+}
+
 kernel void predictPositions(
     device Particle *particles [[buffer(0)]],
     constant Uniforms &uniforms [[buffer(1)]],
@@ -234,34 +249,44 @@ kernel void simulateParticles(
 
     if (uniforms.foamEnabled != 0 && uniforms.dt > 0.0 && uniforms.foamParticleCapacity > 0) {
         float kineticEnergy = dot(particle.velocity, particle.velocity);
-        float agitation = max(forces.agitation - uniforms.foamThreshold, 0.0);
-        float kineticFactor = saturate((kineticEnergy - 3.0) / 30.0);
-        float surfaceFactor = forces.neighbours < 12
-            ? saturate((kineticEnergy - 1.5) / 18.0)
-            : 0.0;
-        float spawnProbability = saturate(
-            (agitation * kineticFactor
-                + surfaceFactor * 1.5 * float(uniforms.sprayEnabled) * uniforms.sprayIntensity)
-            * uniforms.foamIntensity * uniforms.dt * 0.035
+        float trappedAirFactor = uniforms.foamSpawnRate * remap01(
+            forces.agitation, uniforms.foamVelocityMin, uniforms.foamVelocityMax
         );
+        float kineticFactor = remap01(
+            kineticEnergy, uniforms.foamKineticMin, uniforms.foamKineticMax
+        );
+        float spawnFactor = trappedAirFactor * kineticFactor * uniforms.dt;
+        uint spawnCount = uint(floor(spawnFactor));
         uint randomState = id * 19349669u ^ as_type<uint>(uniforms.time) * 83492791u;
-        if (randomValue(randomState) < spawnProbability) {
-            uint foamIndex = atomic_fetch_add_explicit(&foamCounter[0], 1u, memory_order_relaxed)
-                % uniforms.foamParticleCapacity;
-            float3 jitter = float3(
-                randomValue(randomState) * 2.0 - 1.0,
-                randomValue(randomState) * 2.0 - 1.0,
-                randomValue(randomState) * 2.0 - 1.0
+        if (randomValue(randomState) < spawnFactor - floor(spawnFactor)) {
+            spawnCount++;
+        }
+        spawnCount = min(spawnCount, 8u);
+        if (spawnCount > 0) {
+            float speed = length(particle.velocity);
+            float3 axisA = orthonormal(particle.velocity);
+            float3 axisB = normalize(cross(axisA, particle.velocity / max(speed, 0.000001)));
+            float3 cylinderTop = particle.position + particle.velocity * uniforms.dt;
+            uint firstFoamIndex = atomic_fetch_add_explicit(
+                &foamCounter[0], spawnCount, memory_order_relaxed
             );
-            FoamParticle foam;
-            foam.position = particle.position + jitter * uniforms.smoothingRadius * 0.65;
-            foam.velocity = particle.velocity + jitter * 0.35;
-            foam.lifetime = mix(4.0, 9.0, randomValue(randomState));
-            foam.scale = mix(0.65, 1.35, randomValue(randomState));
-            foam.kind = forces.neighbours <= 5 && uniforms.sprayEnabled != 0
-                ? 0.0
-                : (forces.neighbours >= 18 ? 2.0 : 1.0);
-            foamParticles[foamIndex] = foam;
+            for (uint spawnIndex = 0; spawnIndex < spawnCount; spawnIndex++) {
+                float angle = randomValue(randomState) * 2.0 * PI;
+                float3 offsetDirection = cos(angle) * axisA + sin(angle) * axisB;
+                float3 baseOffset = sqrt(randomValue(randomState))
+                    * uniforms.smoothingRadius * offsetDirection;
+                float3 spawnPosition = particle.position + baseOffset
+                    + (cylinderTop - particle.position) * randomValue(randomState);
+                uint foamIndex = (firstFoamIndex + spawnIndex) % uniforms.foamParticleCapacity;
+                FoamParticle foam;
+                foam.position = spawnPosition;
+                foam.velocity = particle.velocity + baseOffset;
+                foam.lifetime = mix(5.0, 15.0, randomValue(randomState));
+                foam.scale = (uniforms.bubbleScale + 1.0) * 0.5;
+                foam.kind = forces.neighbours <= uniforms.sprayMaxNeighbours ? 0.0
+                    : (forces.neighbours >= uniforms.bubbleMinNeighbours ? 2.0 : 1.0);
+                foamParticles[foamIndex] = foam;
+            }
         }
     }
 
@@ -286,7 +311,7 @@ kernel void simulateParticles(
 
     if (uniforms.dt > 0.0) {
         float speedSquared = dot(particle.velocity, particle.velocity);
-        float maxSpeed = uniforms.smoothingRadius * 0.3 / uniforms.dt;
+        float maxSpeed = uniforms.smoothingRadius * 0.5 / uniforms.dt;
         if (speedSquared > maxSpeed * maxSpeed) {
             particle.velocity *= maxSpeed * rsqrt(speedSquared);
         }
@@ -372,7 +397,7 @@ kernel void updateFoamParticles(
         return;
     }
     FoamParticle foam = foamParticles[id];
-    if (foam.lifetime <= 0.0 || uniforms.dt <= 0.0) {
+    if (foam.lifetime <= 0.0 || uniforms.foamDeltaTime <= 0.0) {
         return;
     }
 
@@ -409,27 +434,37 @@ kernel void updateFoamParticles(
         }
     }
 
-    if (neighbourCount <= 5) {
+    bool isSpray = neighbourCount <= uniforms.sprayMaxNeighbours;
+    bool isBubble = neighbourCount >= uniforms.bubbleMinNeighbours;
+    bool isFoam = !isSpray && !isBubble;
+
+    if (isSpray) {
+        if (uniforms.sprayEnabled == 0) {
+            foam.lifetime = 0.0;
+            foamParticles[id] = foam;
+            return;
+        }
         foam.kind = 0.0;
         float speedSquared = dot(foam.velocity, foam.velocity);
         float3 drag = speedSquared > 0.000001
             ? -normalize(foam.velocity) * speedSquared * 0.04
             : float3(0.0);
-        foam.velocity += (float3(0.0, -uniforms.gravity, 0.0) + drag) * uniforms.dt;
-    } else if (neighbourCount >= 18 && weightSum > 0.000001) {
+        foam.velocity += (float3(0.0, -uniforms.gravity, 0.0) + drag) * uniforms.foamDeltaTime;
+    } else if (isBubble && weightSum > 0.000001) {
         foam.kind = 2.0;
         float3 fluidVelocity = velocitySum / weightSum;
-        foam.velocity += ((fluidVelocity - foam.velocity) * 3.0 + float3(0.0, uniforms.gravity * 0.5, 0.0))
-            * uniforms.dt;
-        foam.scale = mix(foam.scale, 0.55, saturate(uniforms.dt * 5.0));
-    } else if (weightSum > 0.000001) {
+        float3 buoyancy = float3(0.0, -uniforms.gravity, 0.0) * (1.0 - uniforms.bubbleBuoyancy);
+        foam.velocity += (buoyancy + (fluidVelocity - foam.velocity) * 3.0)
+            * uniforms.foamDeltaTime;
+    } else if (isFoam && weightSum > 0.000001) {
         foam.kind = 1.0;
-        foam.velocity = mix(foam.velocity, velocitySum / weightSum, saturate(uniforms.dt * 12.0));
-        foam.scale = mix(foam.scale, 1.0, saturate(uniforms.dt * 4.0));
+        foam.velocity = velocitySum / weightSum;
+        foam.lifetime -= uniforms.foamDeltaTime;
     }
 
-    foam.position += foam.velocity * uniforms.dt;
-    foam.lifetime -= uniforms.dt;
+    float targetScale = isBubble ? uniforms.bubbleScale : 1.0;
+    foam.scale = mix(foam.scale, targetScale, saturate(uniforms.foamDeltaTime * 7.0));
+    foam.position += foam.velocity * uniforms.foamDeltaTime;
     float radiusPadding = uniforms.foamScale * foam.scale;
     float3 limit = uniforms.bounds * 0.5 - radiusPadding;
     if (any(abs(foam.position) > limit)) {

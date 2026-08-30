@@ -317,6 +317,7 @@ struct ParametersView: View {
                 Text("Actual resolution is: \(actualDensityResolution.x) × \(actualDensityResolution.y) × \(actualDensityResolution.z)")
                 FloatField("Density Multiplier", value: $settings.densityMultiplier, unit: "")
                 FloatField("ISO Level", value: $settings.isoLevel, unit: "")
+                FloatField("Light Step Size", value: $settings.lightStepSize, unit: "m")
                 HStack {
                     Text("Step Size")
                     
@@ -339,20 +340,23 @@ struct ParametersView: View {
                 FloatField("Brightness multiplier", value: $settings.brightnessMultiplier, unit: "")
                 FloatField("Water IOR", value: $settings.waterIOR, unit: "")
                 FloatField("Surface Roughness", value: $settings.surfaceRoughness, unit: "")
-                FloatField("Wave Detail", value: $settings.surfaceDetailStrength, unit: "")
-                FloatField("Wave Scale", value: $settings.surfaceDetailScale, unit: "")
 
                 Divider()
                 Toggle("Foam", isOn: $settings.foamEnabled)
                 if settings.foamEnabled {
-                    FloatField("Foam Threshold", value: $settings.foamThreshold, unit: "")
-                    FloatField("Foam Intensity", value: $settings.foamIntensity, unit: "")
+                    FloatField("Foam Spawn Rate", value: $settings.foamSpawnRate, unit: "")
+                    FloatField("Trapped Air Min", value: $settings.foamVelocityMin, unit: "")
+                    FloatField("Trapped Air Max", value: $settings.foamVelocityMax, unit: "")
+                    FloatField("Kinetic Energy Min", value: $settings.foamKineticMin, unit: "")
+                    FloatField("Kinetic Energy Max", value: $settings.foamKineticMax, unit: "")
                     FloatField("Foam Scale", value: $settings.foamScale, unit: "")
                     Toggle("Spray", isOn: $settings.sprayEnabled)
                     if settings.sprayEnabled {
-                        FloatField("Spray Intensity", value: $settings.sprayIntensity, unit: "")
-                        FloatField("Spray Scale", value: $settings.sprayScale, unit: "")
+                        IntField("Spray Max Neighbours", value: $settings.sprayMaxNeighbours, unit: "")
                     }
+                    IntField("Bubble Min Neighbours", value: $settings.bubbleMinNeighbours, unit: "")
+                    FloatField("Bubble Buoyancy", value: $settings.bubbleBuoyancy, unit: "")
+                    FloatField("Bubble Scale", value: $settings.bubbleScale, unit: "")
                 }
 
                 Divider()

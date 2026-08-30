@@ -54,6 +54,7 @@ struct Uniforms {
     unsigned int mouseMode; // 0 (none), 1 (repel), 2 (grab)
     
     float stepSize;
+    float lightStepSize;
     float densityMultiplier;
     float isoLevel;
     
@@ -64,16 +65,22 @@ struct Uniforms {
 
     float waterIOR;
     float surfaceRoughness;
-    float surfaceDetailStrength;
-    float surfaceDetailScale;
     unsigned int foamEnabled;
-    float foamThreshold;
-    float foamIntensity;
+    float foamDeltaTime;
+    float foamSpawnRate;
+    float foamVelocityMin;
+    float foamVelocityMax;
+    float foamKineticMin;
+    float foamKineticMax;
     float foamScale;
     unsigned int foamParticleCapacity;
     unsigned int sprayEnabled;
-    float sprayIntensity;
-    float sprayScale;
+    unsigned int sprayMaxNeighbours;
+    unsigned int bubbleMinNeighbours;
+    float bubbleBuoyancy;
+    float bubbleScale;
+
+    simd_uint3 densityResolution;
 
     unsigned int colliderEnabled;
     unsigned int colliderCollisions;
