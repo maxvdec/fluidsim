@@ -29,13 +29,13 @@ final class SimulationSettings {
     var boundaryViewportPadding: Float = 10.0
     
     var particles: Int = 10000
-    var particleSpacing: Float = 0.07
+    var particleSpacing: Float = 0.142
     var randomScattering: Bool = false
     
-    var smoothingRadius: Float = 0.2 // m
+    var smoothingRadius: Float = 0.5 // m
     
     var targetDensity: Float = 100.0
-    var pressureMultiplier: Float = 50.0
+    var pressureMultiplier: Float = 1000.0
     var viscosityStrength: Float = 0.5
     var nearPressureMultiplier: Float = 0.1
     var particleMass: Float = 2.0
@@ -90,21 +90,23 @@ struct MetalView: NSViewRepresentable {
     func updateNSView(_ nsView: SimulationMTKView, context: Context) {}
 }
 
-func createParticlesInGrid(n: Int, spacing: Float = 0.1) -> [Particle] {
-    let columns = Int(ceil(sqrt(Double(n))))
-    let rows = Int(ceil(Double(n) / Double(columns)))
+func createParticlesInGrid(n: Int, settings: SimulationSettings, spacing: Float = 0.1) -> [Particle] {
+    let aspectRatio = max(0.0001, Double(settings.boundsX / settings.boundsY))
+    let rows = min(n, max(1, Int(ceil(sqrt(Double(n) / aspectRatio)))))
+    let baseColumns = n / rows
+    let extraColumns = n % rows
     
     var positions: [SIMD2<Float>] = []
     positions.reserveCapacity(n)
     
-    for i in 0 ..< n {
-        let xIndex = i % columns
-        let yIndex = i / columns
-        
-        let x = (Float(xIndex) - Float(columns - 1) / 2.0) * spacing
+    for yIndex in 0 ..< rows {
+        let columns = baseColumns + (yIndex < extraColumns ? 1 : 0)
         let y = (Float(yIndex) - Float(rows - 1) / 2.0) * spacing
-        
-        positions.append(SIMD2<Float>(x, y))
+
+        for xIndex in 0 ..< columns {
+            let x = (Float(xIndex) - Float(columns - 1) / 2.0) * spacing
+            positions.append(SIMD2<Float>(x, y))
+        }
     }
     
     return positions.map { pos in
@@ -134,7 +136,7 @@ func createParticles(n: Int, wantsRandom: Bool, settings: SimulationSettings, sp
     if wantsRandom {
         return scatterParticlesRandomly(n: n, settings: settings)
     } else {
-        return createParticlesInGrid(n: n, spacing: spacing)
+        return createParticlesInGrid(n: n, settings: settings, spacing: spacing)
     }
 }
 

@@ -37,6 +37,14 @@ float calculateDensityForPass(
             if (all(getCell2D(p.predictedPosition, uniforms.smoothingRadius) == cell)) {
                 float dst = length(p.predictedPosition - samplePos);
                 density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, dst);
+
+                for (uint ghostIndex = 0; ghostIndex < 8; ghostIndex++) {
+                    if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, ghostIndex)) {
+                        float2 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, ghostIndex);
+                        float ghostDst = length(ghostPosition - samplePos);
+                        density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, ghostDst);
+                    }
+                }
             }
 
             entryIndex++;

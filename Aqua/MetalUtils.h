@@ -73,8 +73,8 @@ inline float densityToPressure(float density, float targetDensity, float pressur
 }
 
 inline float calculateSharedPressure(float densityA, float densityB, float targetDensity, float pressureMultiplier) {
-    float pressureA = max(0.0, densityToPressure(densityA, targetDensity, pressureMultiplier));
-    float pressureB = max(0.0, densityToPressure(densityB, targetDensity, pressureMultiplier));
+    float pressureA = densityToPressure(densityA, targetDensity, pressureMultiplier);
+    float pressureB = densityToPressure(densityB, targetDensity, pressureMultiplier);
     return (pressureA + pressureB) / 2;
 }
 
@@ -82,6 +82,40 @@ inline float calculateSharedNearPressure(float nearDensityA, float nearDensityB,
     float pressureA = nearDensityA * nearPressureMultiplier;
     float pressureB = nearDensityB * nearPressureMultiplier;
     return (pressureA + pressureB) / 2;
+}
+
+inline bool boundaryGhostIsActive(float2 samplePos, float2 bounds, float radius, uint index) {
+    float2 halfBounds = bounds * 0.5;
+    bool left = samplePos.x + halfBounds.x < radius;
+    bool right = halfBounds.x - samplePos.x < radius;
+    bool bottom = samplePos.y + halfBounds.y < radius;
+    bool top = halfBounds.y - samplePos.y < radius;
+
+    switch (index) {
+        case 0: return left;
+        case 1: return right;
+        case 2: return bottom;
+        case 3: return top;
+        case 4: return left && bottom;
+        case 5: return left && top;
+        case 6: return right && bottom;
+        case 7: return right && top;
+        default: return false;
+    }
+}
+
+inline float2 boundaryGhostPosition(float2 position, float2 bounds, uint index) {
+    switch (index) {
+        case 0: return float2(-bounds.x - position.x, position.y);
+        case 1: return float2(bounds.x - position.x, position.y);
+        case 2: return float2(position.x, -bounds.y - position.y);
+        case 3: return float2(position.x, bounds.y - position.y);
+        case 4: return float2(-bounds.x - position.x, -bounds.y - position.y);
+        case 5: return float2(-bounds.x - position.x, bounds.y - position.y);
+        case 6: return float2(bounds.x - position.x, -bounds.y - position.y);
+        case 7: return float2(bounds.x - position.x, bounds.y - position.y);
+        default: return position;
+    }
 }
 
 #define HASHK1 15823

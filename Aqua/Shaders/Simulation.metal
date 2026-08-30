@@ -39,6 +39,15 @@ float2 calculateDensitiesAtPosition(
                 float dst = length(p.predictedPosition - samplePos);
                 density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, dst);
                 nearDensity += uniforms.particleMass * nearDensityKernel(uniforms.smoothingRadius, dst);
+
+                for (uint ghostIndex = 0; ghostIndex < 8; ghostIndex++) {
+                    if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, ghostIndex)) {
+                        float2 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, ghostIndex);
+                        float ghostDst = length(ghostPosition - samplePos);
+                        density += uniforms.particleMass * smoothingKernel(uniforms.smoothingRadius, ghostDst);
+                        nearDensity += uniforms.particleMass * nearDensityKernel(uniforms.smoothingRadius, ghostDst);
+                    }
+                }
             }
 
             entryIndex++;
@@ -89,6 +98,27 @@ float2 calculatePressureForce(
                         sharedPressure * slope
                         + sharedNearPressure * nearSlope
                     ) * dir * uniforms.particleMass / neighborDensity;
+                }
+
+                for (uint ghostIndex = 0; ghostIndex < 8; ghostIndex++) {
+                    if (boundaryGhostIsActive(samplePos, uniforms.bounds, uniforms.smoothingRadius, ghostIndex)) {
+                        float2 ghostPosition = boundaryGhostPosition(p.predictedPosition, uniforms.bounds, ghostIndex);
+                        float2 ghostOffset = ghostPosition - samplePos;
+                        float ghostDst = length(ghostOffset);
+
+                        if (ghostDst > 0.0001 && ghostDst < uniforms.smoothingRadius) {
+                            float2 ghostDir = ghostOffset / ghostDst;
+                            float ghostSlope = smoothingKernelDerivative(uniforms.smoothingRadius, ghostDst);
+                            float ghostNearSlope = nearDensityKernelDerivative(uniforms.smoothingRadius, ghostDst);
+                            float ghostDensity = max(p.density, 0.0001);
+                            float ghostSharedPressure = calculateSharedPressure(sampleDensity, ghostDensity, uniforms.targetDensity, uniforms.pressureMultiplier);
+                            float ghostSharedNearPressure = calculateSharedNearPressure(sampleNearDensity, p.nearDensity, uniforms.nearPressureMultiplier);
+                            pressureForce += (
+                                ghostSharedPressure * ghostSlope
+                                + ghostSharedNearPressure * ghostNearSlope
+                            ) * ghostDir * uniforms.particleMass / ghostDensity;
+                        }
+                    }
                 }
             }
 
@@ -152,6 +182,8 @@ kernel void predictPositions(
     Particle p = particles[id];
     float2 predictedVelocity = p.velocity + float2(0.0, -uniforms.gravity) * uniforms.dt;
     p.predictedPosition = p.position + predictedVelocity * uniforms.dt;
+    float2 predictionLimit = uniforms.bounds * 0.5 - uniforms.particleSize;
+    p.predictedPosition = clamp(p.predictedPosition, -predictionLimit, predictionLimit);
     particles[id] = p;
 }
 
